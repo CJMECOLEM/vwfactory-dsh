@@ -1698,6 +1698,31 @@ var FactoryProxy = class {
       };
     });
   }
+  /**
+   * Probe chat-route models that are in neither vision list with a test
+   * image (at most `limit` per start) and remember the verdicts in
+   * state.visionProbe, which syncPatchModels uses for `input: [text, image]`.
+   * @returns the number of new verdicts.
+   */
+  async probeVision(entries, limit = 6) {
+    const state = this.store.state;
+    if (!state || typeof this.store.saveState !== "function") return 0;
+    if (!isRecord(state.visionProbe)) state.visionProbe = {};
+    Object.assign(VISION_PROBED, state.visionProbe);
+    const todo = entries.filter((e) => providerKey(e.family) === "factory" && needsVisionProbe(e.id)).slice(0, limit);
+    if (!todo.length || !this.store.activeIdentity?.()) return 0;
+    const token = await this.store.proxyToken();
+    let found = 0;
+    for (const e of todo) {
+      const ok = await probeVisionModel(this.port, token, e.id);
+      if (ok === void 0) continue;
+      state.visionProbe[e.id] = VISION_PROBED[e.id] = { ok, at: Date.now() };
+      found++;
+      console.info(`[vwFactory] image probe: ${e.id} -> ${ok ? "accepts images" : "text only"}`);
+    }
+    if (found) this.store.saveState();
+    return found;
+  }
   factoryHeaders(id, upstreamProvider, extra) {
     const headers = {
       ...FACTORY_HEADERS,
@@ -2485,8 +2510,90 @@ var PROVIDER_HEADS = {
 // front instead of failing mid-turn). Claude and GPT routes declare images
 // provider-wide via defaultInput.
 var OPEN_VISION_MODELS = /^(kimi-k\d|deepseek-v4|glm-[\d.]+-flash$|minimax-m3\b|minimax-m2\.7\b)/;
+var KNOWN_TEXT_ONLY = /* @__PURE__ */ new Set(["glm-5.3", "nemotron-3-ultra", "minimax-m2.5"]);
+// Probe results for models outside both lists (state.json visionProbe).
+var VISION_PROBED = {};
 function supportsImageInput(id) {
+  const probed = VISION_PROBED[id];
+  if (probed && typeof probed.ok === "boolean") return probed.ok;
   return OPEN_VISION_MODELS.test(id);
+}
+function needsVisionProbe(id) {
+  return !OPEN_VISION_MODELS.test(id) && !KNOWN_TEXT_ONLY.has(id) && !(id in VISION_PROBED);
+}
+var PROBE_PNG_B64;
+/** 32x32 solid red PNG, built once. */
+function probePng() {
+  if (PROBE_PNG_B64) return PROBE_PNG_B64;
+  const W = 32;
+  const raw = Buffer.alloc((W * 3 + 1) * W);
+  for (let y = 0; y < W; y++) for (let x = 0; x < W; x++) raw.set([230, 20, 20], y * (W * 3 + 1) + 1 + x * 3);
+  const crcTable = Array.from({ length: 256 }, (_, n) => {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 3988292384 ^ c >>> 1 : c >>> 1;
+    return c >>> 0;
+  });
+  const crc = (b) => {
+    let c = 4294967295;
+    for (const x of b) c = crcTable[(c ^ x) & 255] ^ c >>> 8;
+    return (c ^ 4294967295) >>> 0;
+  };
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const td = Buffer.concat([Buffer.from(type, "latin1"), data]);
+    const c = Buffer.alloc(4);
+    c.writeUInt32BE(crc(td));
+    return Buffer.concat([len, td, c]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(W, 0);
+  ihdr.writeUInt32BE(W, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 2;
+  PROBE_PNG_B64 = Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk("IHDR", ihdr),
+    chunk("IDAT", zlib2.deflateSync(raw)),
+    chunk("IEND", Buffer.alloc(0))
+  ]).toString("base64");
+  return PROBE_PNG_B64;
+}
+/**
+ * Ask a chat-route model for the colour of a red test image through the local
+ * proxy. true = it saw the image, false = rejected or blind, undefined =
+ * inconclusive (network / 5xx / 429): try again on a later start.
+ */
+async function probeVisionModel(port, token, model) {
+  let r;
+  try {
+    r = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model,
+        max_tokens: 400,
+        messages: [{ role: "user", content: [
+          { type: "text", text: "What is the dominant color of this image? Answer with one word." },
+          { type: "image_url", image_url: { url: `data:image/png;base64,${probePng()}` } }
+        ] }]
+      }),
+      signal: AbortSignal.timeout(6e4)
+    });
+  } catch {
+    return void 0;
+  }
+  const text = await r.text().catch(() => "");
+  if (r.status === 400 || r.status === 422) return /image|vision|modal|multimodal|support/i.test(text) ? false : void 0;
+  if (!r.ok) return void 0;
+  let answer = "";
+  try {
+    answer = String(JSON.parse(text).choices?.[0]?.message?.content ?? "");
+  } catch {
+    return void 0;
+  }
+  if (!answer.trim()) return void 0;
+  return /red|orange|scarlet|crimson|红|橙/i.test(answer);
 }
 function providerKey(family) {
   if (family === "anthropic") return "factory-claude";
@@ -3608,7 +3715,11 @@ function apply(ctx) {
         await proxy.start();
         started = true;
         ctx.logger?.info(`vwFactory proxy on http://127.0.0.1:${proxy.port}`);
-        void proxy.catalogEntries().then((entries) => {
+        void proxy.catalogEntries().then(async (entries) => {
+          try {
+            await proxy.probeVision(entries);
+          } catch {
+          }
           if (syncPatchModels(PATCH, entries)) {
             ctx.logger?.info(
               "vwFactory: model list updated in cordis.patch.yml (restart dsh to apply)"
