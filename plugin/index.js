@@ -172,11 +172,24 @@ var FACTORY_MODELS = [
   { id: "minimax-m3", name: "MiniMax M3", contextWindow: 512e3, maxTokens: 64e3, reasoning: true },
   { id: "minimax-m2.7", name: "MiniMax M2.7", contextWindow: 196600, maxTokens: 64e3, reasoning: true },
   { id: "minimax-m2.5", name: "MiniMax M2.5", contextWindow: 204800, maxTokens: 64e3, reasoning: true },
-  { id: "nemotron-3-ultra", name: "Nemotron 3 Ultra", contextWindow: 262144, maxTokens: 65536, reasoning: true }
+  { id: "nemotron-3-ultra", name: "Nemotron 3 Ultra", contextWindow: 262144, maxTokens: 65536, reasoning: true },
+  { id: "gemini-3.1-pro-preview", name: "Gemini 3.1 Pro", contextWindow: 1048576, maxTokens: 65536, reasoning: true },
+  { id: "gemini-3.8-flash", name: "Gemini 3.8 Flash", contextWindow: 1048576, maxTokens: 65536, reasoning: true },
+  { id: "gemini-3.7-flash", name: "Gemini 3.7 Flash", contextWindow: 1048576, maxTokens: 65536, reasoning: true },
+  { id: "gemini-3.6-flash", name: "Gemini 3.6 Flash", contextWindow: 1048576, maxTokens: 65536, reasoning: true },
+  { id: "gemini-3.5-flash", name: "Gemini 3.5 Flash", contextWindow: 1048576, maxTokens: 65536, reasoning: true },
+  { id: "gemini-3-flash-preview", name: "Gemini 3 Flash", contextWindow: 1048576, maxTokens: 65536, reasoning: true },
+  { id: "grok-4.7", name: "Grok 4.7", contextWindow: 256e3, maxTokens: 64e3, reasoning: true },
+  { id: "grok-4.6", name: "Grok 4.6", contextWindow: 256e3, maxTokens: 64e3, reasoning: true },
+  { id: "grok-4.5", name: "Grok 4.5", contextWindow: 256e3, maxTokens: 64e3, reasoning: true }
 ];
 function familyOf(id) {
   if (id.startsWith("claude-")) return "anthropic";
   if (id.startsWith("gpt-") || id.endsWith("-codex")) return "openai-responses";
+  // Grok: Factory only accepts x-api-provider "xai" on the Responses route.
+  if (id.startsWith("grok-")) return "openai-responses";
+  // Gemini: chat-completions with x-api-provider "google" (image models excluded).
+  if (id.startsWith("gemini-") && !id.includes("-image")) return "openai-completions";
   if (id.startsWith("glm-") || id.startsWith("kimi-") || id.startsWith("deepseek-") || id.startsWith("minimax-") || id.startsWith("nemotron-")) {
     return "openai-completions";
   }
@@ -185,6 +198,8 @@ function familyOf(id) {
 function upstreamProviderFor(id) {
   if (id.startsWith("claude-")) return "anthropic";
   if (id.startsWith("gpt-") || id.endsWith("-codex")) return "openai";
+  if (id.startsWith("gemini-")) return "google";
+  if (id.startsWith("grok-")) return "xai";
   return "fireworks";
 }
 
@@ -231,6 +246,8 @@ function mergeCatalogIds(docs, extra = []) {
 function defaultEfforts(id) {
   const fam = familyOf(id);
   if (fam === "unsupported") return void 0;
+  if (id.startsWith("grok-")) return ["low", "medium", "high", "xhigh"];
+  if (id.startsWith("gemini-")) return ["off", "low", "medium", "high"];
   if (fam === "openai-completions") return ["off", "high"];
   return ["off", "low", "medium", "high", "xhigh", "max"];
 }
@@ -1908,10 +1925,12 @@ var FactoryProxy = class {
     } else {
       if (body.prompt_cache_key === void 0 && upstreamProviderFor(model) === "openai") body.prompt_cache_key = sessionId;
       url = `${base}${OPENAI_BASE_PATH}/responses`;
-      headers = this.factoryHeaders(id, upstreamProviderFor(model), {
+      const respProvider = upstreamProviderFor(model);
+      // The OpenAI-Platform header makes the gateway 403 non-OpenAI (xai) requests.
+      headers = this.factoryHeaders(id, respProvider, respProvider === "openai" ? {
         "OpenAI-Platform": FACTORY_OPENAI_PLATFORM_ORG,
         "x-session-id": sessionId
-      });
+      } : { "x-session-id": sessionId });
     }
     return this.upstream(url, headers, JSON.stringify(body), clientHeaders, abort, body.stream === true);
   }
@@ -2753,7 +2772,7 @@ var PROVIDER_HEADS = {
 // unknown future models default to text-only too (DSH refuses the image up
 // front instead of failing mid-turn). Claude and GPT routes declare images
 // provider-wide via defaultInput.
-var OPEN_VISION_MODELS = /^(kimi-k\d|deepseek-v4|glm-[\d.]+-flash$|minimax-m3\b|minimax-m2\.7\b)/;
+var OPEN_VISION_MODELS = /^(gemini-|kimi-k\d|deepseek-v4|glm-[\d.]+-flash$|minimax-m3\b|minimax-m2\.7\b)/;
 var KNOWN_TEXT_ONLY = /* @__PURE__ */ new Set(["glm-5.3", "nemotron-3-ultra", "minimax-m2.5"]);
 // Probe results for models outside both lists (state.json visionProbe).
 var VISION_PROBED = {};

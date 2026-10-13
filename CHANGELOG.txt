@@ -1,5 +1,11 @@
-﻿vwFactory 更新日志
+vwFactory 更新日志
 ==================
+
+未发布
+  - 新增: Gemini (3.1 Pro / 3.x Flash) 与 Grok (4.5 / 4.6 / 4.7) 模型。
+    Gemini 走 chat/completions + x-api-provider: google；Grok 走 /responses + x-api-provider: xai，
+    且不发送 OpenAI-Platform 头 (带上会 403)。此前两者被判为 unsupported 而从模型列表中过滤，
+    强行调用时以 fireworks 身份发出，返回 "Provider not available in this region"
 
 v0.4.7
   - 修复: 通过 Factory 通道使用 Claude 时，中文 / emoji 偶发显示为乱码 (多字节字符被拆在两个网络包之间)，
