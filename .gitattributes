@@ -1,0 +1,2 @@
+# keep bytes exactly as written (ps1/txt need UTF-8 BOM + CRLF for Windows PowerShell 5.1)
+* -text

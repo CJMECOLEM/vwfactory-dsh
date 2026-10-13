@@ -1,0 +1,162 @@
+- id: llm-pi-ai
+  config:
+    providers:
+      factory-claude:
+        displayName: Factory (Claude)
+        apiKeyEnv: VWFACTORY_TOKEN
+        api: anthropic-messages
+        baseURL: http://127.0.0.1:4199
+        defaultInput: [text, image]
+        models:
+          - id: claude-opus-5-5
+            name: "Claude Opus 5.5 · 1.6×"
+            reasoningEfforts: { low: low, medium: medium, high: high, xhigh: xhigh, max: max }
+          - id: claude-opus-5-5-fast
+            name: "Claude Opus 5.5 Fast · 3.2×"
+            reasoningEfforts: { low: low, medium: medium, high: high, xhigh: xhigh, max: max }
+          - id: claude-opus-5
+            name: "Claude Opus 5 · 2×"
+            reasoningEfforts: { off: null, low: low, medium: medium, high: high, xhigh: xhigh, max: max }
+          - id: claude-opus-5-fast
+            name: "Claude Opus 5 Fast · 4×"
+            reasoningEfforts: { off: null, low: low, medium: medium, high: high, xhigh: xhigh, max: max }
+          - id: claude-opus-4-8
+            name: "Claude Opus 4.8 · 2×"
+            reasoningEfforts: { off: null, low: low, medium: medium, high: high, xhigh: xhigh, max: max }
+          - id: claude-opus-4-8-fast
+            name: "Claude Opus 4.8 Fast · 4×"
+            reasoningEfforts: { off: null, low: low, medium: medium, high: high, xhigh: xhigh, max: max }
+          - id: claude-opus-4-7
+            name: "Claude Opus 4.7 · 2×"
+            reasoningEfforts: { off: null, low: low, medium: medium, high: high, xhigh: xhigh, max: max }
+          - id: claude-opus-4-6
+            name: "Claude Opus 4.6 · 2×"
+            reasoningEfforts: { off: null, low: low, medium: medium, high: high, max: max }
+          - id: claude-sonnet-5
+            name: "Claude Sonnet 5 · 0.8×"
+            reasoningEfforts: { off: null, low: low, medium: medium, high: high, xhigh: xhigh, max: max }
+          - id: claude-sonnet-4-6
+            name: "Claude Sonnet 4.6 · 1.2×"
+            reasoningEfforts: { off: null, low: low, medium: medium, high: high, max: max }
+          - id: claude-opus-4-5-20251101
+            name: "Claude Opus 4.5 · 2×"
+            reasoningEfforts: { off: null, low: low, medium: medium, high: high }
+          - id: claude-fable-5
+            name: "Claude Fable 5 · 4×"
+            reasoningEfforts: { off: null, low: low, medium: medium, high: high, xhigh: xhigh, max: max }
+          - id: claude-sonnet-4-5-20250929
+            name: "Claude Sonnet 4.5 · 1.2×"
+            reasoningEfforts: { off: null, low: low, medium: medium, high: high }
+          - id: claude-haiku-4-5-20251001
+            name: "Claude Haiku 4.5 · 0.4×"
+            reasoningEfforts: { off: null, low: low, medium: medium, high: high }
+          - id: claude-fable-5.1
+            name: "Claude Fable 5.1 · 4×"
+            reasoningEfforts: { off: null, low: low, medium: medium, high: high, xhigh: xhigh, max: max }
+          - id: claude-sonnet-5-5
+            name: "Claude Sonnet 5.5 · 0.8×"
+            reasoningEfforts: { off: null, low: low, medium: medium, high: high, xhigh: xhigh, max: max }
+      factory-gpt:
+        displayName: Factory (GPT)
+        apiKeyEnv: VWFACTORY_TOKEN
+        api: openai-responses
+        baseURL: http://127.0.0.1:4199/v1
+        defaultInput: [text, image]
+        models:
+          - id: gpt-6.1-sol
+            name: "GPT-6.1 Sol · 0.8×"
+            reasoningEfforts: { low: low, medium: medium, high: high, xhigh: xhigh, max: max }
+          - id: gpt-6-sol
+            name: "GPT-6 Sol · 0.8×"
+            reasoningEfforts: { off: null, low: low, medium: medium, high: high, xhigh: xhigh, max: max }
+          - id: gpt-6-astra
+            name: "GPT-6 Astra · 4×"
+            reasoningEfforts: { low: low, medium: medium, high: high, xhigh: xhigh, max: max }
+          - id: gpt-6-luna
+            name: "GPT-6 Luna · 0.04×"
+            reasoningEfforts: { off: null, low: low, medium: medium, high: high, xhigh: xhigh, max: max }
+          - id: gpt-5.6-sol
+            name: "GPT-5.6 Sol · 1.6×"
+            reasoningEfforts: { off: null, low: low, medium: medium, high: high, xhigh: xhigh, max: max }
+          - id: gpt-5.6-sol-fast
+            name: "GPT-5.6 Sol Fast · 3.2×"
+            reasoningEfforts: { off: null, low: low, medium: medium, high: high, xhigh: xhigh, max: max }
+          - id: gpt-5.6-luna
+            name: "GPT-5.6 Luna · 0.08×"
+            reasoningEfforts: { off: null, low: low, medium: medium, high: high, xhigh: xhigh, max: max }
+          - id: gpt-5.6-terra
+            name: "GPT-5.6 Terra · 0.8×"
+            reasoningEfforts: { off: null, low: low, medium: medium, high: high, xhigh: xhigh, max: max }
+          - id: gpt-5.5
+            name: "GPT-5.5 · 2×"
+            reasoningEfforts: { low: low, medium: medium, high: high, xhigh: xhigh }
+          - id: gpt-5.5-fast
+            name: "GPT-5.5 Fast · 5×"
+            reasoningEfforts: { low: low, medium: medium, high: high, xhigh: xhigh }
+          - id: gpt-5.5-pro
+            name: "GPT-5.5 Pro · 12×"
+            reasoningEfforts: { medium: medium, high: high, xhigh: xhigh }
+          - id: gpt-5.4
+            name: "GPT-5.4 · 1×"
+            reasoningEfforts: { low: low, medium: medium, high: high, xhigh: xhigh }
+          - id: gpt-5.4-fast
+            name: "GPT-5.4 Fast · 2×"
+            reasoningEfforts: { low: low, medium: medium, high: high, xhigh: xhigh }
+          - id: gpt-5.4-mini
+            name: "GPT-5.4 Mini · 0.3×"
+            reasoningEfforts: { low: low, medium: medium, high: high, xhigh: xhigh }
+          - id: gpt-5.3-codex
+            name: "GPT-5.3-Codex · 0.7×"
+            reasoningEfforts: { low: low, medium: medium, high: high, xhigh: xhigh }
+          - id: gpt-5.3-codex-fast
+            name: "GPT-5.3-Codex Fast · 1.4×"
+            reasoningEfforts: { low: low, medium: medium, high: high, xhigh: xhigh }
+          - id: gpt-5.2
+            name: "GPT-5.2 · 0.7×"
+            reasoningEfforts: { off: null, low: low, medium: medium, high: high, xhigh: xhigh }
+          - id: gpt-5.4-mini-fast
+            name: "GPT-5.4 Mini Fast · 0.6×"
+            reasoningEfforts: { low: low, medium: medium, high: high, xhigh: xhigh }
+      factory:
+        displayName: Factory
+        apiKeyEnv: VWFACTORY_TOKEN
+        api: openai-completions
+        baseURL: http://127.0.0.1:4199/v1
+        models:
+          - id: glm-5.3
+            name: "GLM-5.3 · 0.56×"
+            reasoningEfforts: { low: low, high: high, max: max }
+          - id: glm-5.3-flash
+            name: "GLM-5.3-Flash · 0.06×"
+            input: [text, image]
+            reasoningEfforts: { low: low, high: high, max: max }
+          - id: kimi-k3
+            name: "Kimi K3 · 1.2×"
+            input: [text, image]
+            reasoningEfforts: { off: null, low: low, high: high, max: max }
+          - id: deepseek-v4.1-flash
+            name: "DeepSeek V4.1 Flash · 0.12×"
+            input: [text, image]
+            reasoningEfforts: { off: null, low: low, high: high, max: max }
+          - id: deepseek-v4-flash-0731
+            name: "DeepSeek V4 Flash 0731 · 0.176×"
+            input: [text, image]
+            reasoningEfforts: { off: null, low: low, high: high, max: max }
+          - id: deepseek-v4-pro
+            name: "DeepSeek V4 Pro · 0.528×"
+            input: [text, image]
+            reasoningEfforts: { off: null, low: low, high: high, max: max }
+          - id: minimax-m3
+            name: "MiniMax M3 · 0.12×"
+            input: [text, image]
+            reasoningEfforts: { high: high }
+          - id: minimax-m2.7
+            name: "MiniMax M2.7 · 0.12×"
+            input: [text, image]
+            reasoningEfforts: { high: high }
+          - id: minimax-m2.5
+            name: "MiniMax M2.5"
+            reasoningEfforts: { off: null, high: high }
+          - id: nemotron-3-ultra
+            name: "Nemotron 3 Ultra · 0.24×"
+            reasoningEfforts: { off: null, high: high }
