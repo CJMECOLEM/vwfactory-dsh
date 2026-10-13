@@ -329,6 +329,9 @@ window.__ModuleLoader__.load({
 .vwf-badge{font-size:11px;padding:0 7px;border-radius:9px;line-height:18px;flex:none}
 .vwf-more{position:relative;flex:none}
 .vwf-btn.icon{padding:2px 8px;font-size:14px;line-height:18px;letter-spacing:1px}
+.vwf-btn.icon-lg{padding:0;width:30px;height:30px;display:inline-grid;place-items:center}
+.vwf-spin{animation:vwf-spin .9s linear infinite}
+@keyframes vwf-spin{to{transform:rotate(360deg)}}
 .vwf-menu{position:absolute;right:0;top:calc(100% + 4px);z-index:30;min-width:128px;padding:4px;border-radius:10px;
   background:var(--dsw-alias-bg-layer-1,#fff);border:.5px solid ${V.border};
   box-shadow:0 6px 24px rgba(0,0,0,.16);display:flex;flex-direction:column}
@@ -438,19 +441,18 @@ window.__ModuleLoader__.load({
 			if (!items.length) return h("div", { style: { fontSize: 12, color: V.fg3 } }, t("noQuota"));
 			return h("div", { className: "vwf-rings" }, ...items.map(([label, b]) => h(QuotaRing, { key: label, t, label, bucket: b })));
 		}
-		/** One-line summary for a collapsed account: mini ring + 5h / week / month. */
+		/** Collapsed-account summary: mini ring + the most-used main window; all windows on hover. */
 		function QuotaSummary({ t, q }) {
 			if (!q) return h("span", { className: "vwf-acc-sum" }, "—");
 			if (q.error) return h("span", { className: "vwf-acc-sum", style: { color: V.danger }, title: q.error }, t("pillQuotaError"));
 			const std = windowsOf(t, q, "std");
 			if (!std.length) return h("span", { className: "vwf-acc-sum" }, "—");
-			return h("span", { className: "vwf-acc-sum" },
-				h(MiniRing, { p: worstOf(q) }),
-				...std.flatMap(([label, b], i) => {
-					const p = Math.round(b.usedPercent);
-					const el = h("span", { key: label, style: p >= 90 ? { color: V.danger } : p >= 70 ? { color: V.warn } : null }, `${label === t("w5h") ? t("w5hShort") : label} ${p}%`);
-					return i ? [h("span", { key: label + "-s", style: { opacity: 0.5 } }, "·"), el] : [el];
-				}));
+			const [label, b] = std.reduce((m, x) => (x[1].usedPercent > m[1].usedPercent ? x : m));
+			const p = Math.min(100, Math.round(b.usedPercent));
+			const tip = std.map(([l, x]) => `${l} ${Math.round(x.usedPercent)}%` + (x.resetsAt ? ` · ${resetIn(t, x.resetsAt)}` : "")).join("\n");
+			return h("span", { className: "vwf-acc-sum", title: tip },
+				h(MiniRing, { p }),
+				h("span", { style: p >= 90 ? { color: V.danger } : p >= 70 ? { color: V.warn } : null }, `${label} ${p}%`));
 		}
 		/**
 		 * First fully opaque background colour behind `el` (walking up the tree), so a
@@ -502,14 +504,14 @@ window.__ModuleLoader__.load({
 					}, armed === it.key ? it.confirm : it.label))) : null);
 		}
 		/** Cooldown badge + live conversation count (balance mode). */
-		function AccStatus({ t, acc }) {
+		function AccStatus({ t, acc, hideSessions }) {
 			const cd = acc.cooldown;
 			return h(React.Fragment, null,
 				cd ? h("span", {
 					title: `${cd.reason || ""} · ${resetIn(t, cd.until)}`,
 					style: { fontSize: 11, padding: "0 7px", borderRadius: 9, lineHeight: "18px", flex: "none", color: V.danger, border: `.5px solid ${V.danger}` }
 				}, t("cooling")) : null,
-				acc.sessions > 0 ? h("span", { style: { fontSize: 11, color: V.fg3, flex: "none" } }, fmt(t("sessionsN"), { n: acc.sessions })) : null
+				acc.sessions > 0 && !hideSessions ? h("span", { style: { fontSize: 11, color: V.fg3, flex: "none" } }, fmt(t("sessionsN"), { n: acc.sessions })) : null
 			);
 		}
 		function ModeSeg({ t, mode, onChange }) {
@@ -520,10 +522,13 @@ window.__ModuleLoader__.load({
 					onClick: () => { if (cur !== m) onChange(m); }
 				}, t(m === "balance" ? "modeBalance" : "modeSingle"))));
 		}
-		function AccountCard({ t, acc, busy, onAction, defaultOpen }) {
+		function AccountCard({ t, acc, busy, onAction, defaultOpen, balance }) {
 			const [open, setOpen] = useState(!!defaultOpen);
-			// expand an account when it becomes the active one
-			useEffect(() => { if (defaultOpen) setOpen(true); }, [defaultOpen]);
+			// re-apply the default when the active account or the routing mode changes
+			useEffect(() => { setOpen(!!defaultOpen); }, [defaultOpen, balance]);
+			// In balance mode the "active" account is not used for routing: show the
+			// conversation count instead of 使用中, and no 切换 button.
+			const current = acc.active && !balance;
 			const name = acc.label || acc.email || acc.id;
 			const q = acc.quota;
 			const meta = [
@@ -535,7 +540,7 @@ window.__ModuleLoader__.load({
 				q && typeof q.extraUsageBalanceCents === "number" ? fmt(t("balance"), { v: (q.extraUsageBalanceCents / 100).toFixed(2) }) : ""
 			].filter(Boolean).join("\n");
 			const toggle = () => setOpen((v) => !v);
-			return h("li", { className: "vwf-card" + (acc.active ? " on" : ""), style: { listStyle: "none", gap: open ? 12 : 0 } },
+			return h("li", { className: "vwf-card" + (current ? " on" : ""), style: { listStyle: "none", gap: open ? 12 : 0 } },
 				h("div", { className: "vwf-acc-head", onClick: toggle },
 					h("button", {
 						type: "button", className: "vwf-chev", "aria-expanded": open, title: open ? t("collapse") : t("expand"),
@@ -543,11 +548,12 @@ window.__ModuleLoader__.load({
 					}, h("svg", { width: 10, height: 10, viewBox: "0 0 10 10", "aria-hidden": true },
 						h("path", { d: "M3.5 1.5 7 5 3.5 8.5", fill: "none", stroke: "currentColor", strokeWidth: 1.6, strokeLinecap: "round", strokeLinejoin: "round" }))),
 					h("span", { className: "vwf-acc-name", title: meta ? `${name}\n${meta}` : name }, name),
-					acc.active ? h("span", { className: "vwf-badge", style: { color: "#fff", background: V.ok } }, t("active")) : null,
-					h(AccStatus, { t, acc }),
+					current ? h("span", { className: "vwf-badge", style: { color: "#fff", background: V.ok } }, t("active")) : null,
+					balance && acc.sessions > 0 ? h("span", { className: "vwf-badge", style: { color: V.accent, border: `.5px solid ${V.accent}` } }, fmt(t("sessionsN"), { n: acc.sessions })) : null,
+					h(AccStatus, { t, acc, hideSessions: true }),
 					h("span", { style: { flex: 1 } }),
 					open ? h(PoolSwitch, { t, q: acc.quota }) : h(QuotaSummary, { t, q: acc.quota }),
-					acc.active ? null : h("button", {
+					current || balance ? null : h("button", {
 						type: "button", className: "vwf-btn sm", disabled: busy,
 						onClick: (e) => { e.stopPropagation(); onAction("switch", acc); }
 					}, t("switch")),
@@ -793,7 +799,12 @@ window.__ModuleLoader__.load({
 						h("h2", { style: { margin: 0, fontSize: 18, fontWeight: 600 }, title: [t("intro"), sub].filter(Boolean).join("\n") }, t("title"))
 					),
 					h("div", { style: { display: "flex", gap: 8, alignItems: "center" } },
-						h("button", { type: "button", className: "vwf-btn", disabled: refreshingAll || !state, onClick: () => refreshAll(false), title: sub || undefined }, refreshingAll ? t("refreshing") : t("refreshAll")),
+						h("button", {
+							type: "button", className: "vwf-btn icon-lg", disabled: refreshingAll || !state, onClick: () => refreshAll(false),
+							title: [refreshingAll ? t("refreshing") : t("refreshAll"), sub].filter(Boolean).join("\n"), "aria-label": t("refreshAll")
+						}, h("svg", { width: 16, height: 16, viewBox: "0 0 16 16", "aria-hidden": true, className: refreshingAll ? "vwf-spin" : undefined },
+							h("path", { d: "M13.2 8a5.2 5.2 0 1 1-1.52-3.68", fill: "none", stroke: "currentColor", strokeWidth: 1.5, strokeLinecap: "round" }),
+							h("path", { d: "M13.4 2.4v2.9h-2.9", fill: "none", stroke: "currentColor", strokeWidth: 1.5, strokeLinecap: "round", strokeLinejoin: "round" }))),
 						h("button", { type: "button", className: "vwf-btn primary", disabled: !state, onClick: () => setAdding((v) => !v) }, adding ? t("cancel") : t("add")),
 						h(MoreMenu, {
 							t, items: [
@@ -820,7 +831,10 @@ window.__ModuleLoader__.load({
 						ids.length === 0
 							? h("div", { className: "vwf-card", style: { fontSize: 13, color: V.fg3, alignItems: "center", textAlign: "center", padding: 24 } }, t("empty"))
 							: h("ul", { style: { margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 8 } },
-								...ids.map((acc) => h(AccountCard, { key: acc.id, t, acc, busy: busyId === acc.id, onAction, defaultOpen: acc.active || ids.length === 1 }))),
+								...ids.map((acc) => h(AccountCard, {
+									key: acc.id, t, acc, busy: busyId === acc.id, onAction, balance: state.routing === "balance",
+									defaultOpen: ids.length === 1 || (acc.active && state.routing !== "balance")
+								}))),
 						h("div", { className: "vwf-card vwf-list", style: { marginTop: 6 } },
 							h("div", { className: "vwf-row" },
 								h("div", { className: "vwf-row-main", title: t("autoSwitchTip") },
