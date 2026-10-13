@@ -7,13 +7,25 @@
 - 额度显示在输入框下方，快用完时弹窗提醒
 - Key 只存在本机，用 Windows 账户加密（DPAPI）
 
-## 安装
+## 使用教程
 
-1. 到 [Releases](../../releases/latest) 下载最新的 `vwfactory-dsh-vX.Y.Z.zip` 并解压
-2. 双击 `install.bat`（DSH 正在运行时会询问是否自动重启，回车即可）
-3. DSH → 设置 → Factory 账号 → 粘贴 key（每行一个：`邮箱----fk-xxxx`）
+**一、安装插件**
 
-升级：直接安装新版本，账号保留。卸载：双击 `uninstall.bat`（加 `-RemoveData` 连账号数据一起删）。
+1. 下载 DeepSeek Harness 并**启动一次**（一定要启动一次，否则 DSH 配置文件夹还没创建）
+2. 到 [Releases](../../releases/latest) 下载 `vwfactory-dsh-vX.Y.Z.zip` 并解压
+3. 双击 `install.bat`（DSH 正在运行时会询问是否自动重启，直接回车）
+
+**二、添加 Factory 的 API Key**
+
+1. Factory 官网 → Settings → API Keys → Create Key，名字随便起，日期不用选
+2. 复制 Key，打开 DSH → 设置 → Factory 账号 → 添加账号，按 `邮箱----Key` 填入（邮箱只用来区分账号；每行一个，可以一次加多个）
+   - 也可以像旧版一样，在 DSH 运行时用浏览器打开 http://127.0.0.1:4199/ 导入
+
+**三、开始用**
+
+在输入框右侧的模型选择里，选 Factory (Claude) / Factory (GPT) / Factory 下的模型。
+
+更新：下载新压缩包、解压、再双击 `install.bat`，账号保留。卸载：双击 `uninstall.bat`（加 `-RemoveData` 连账号数据一起删）。
 
 更多说明见 [README.txt](README.txt)，更新记录见 [CHANGELOG.txt](CHANGELOG.txt)。
 
