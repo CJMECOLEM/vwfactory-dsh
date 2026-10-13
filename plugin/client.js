@@ -30,12 +30,14 @@ window.__ModuleLoader__.load({
 			cancel: "取消",
 			openExternal: "在浏览器中打开",
 			autoSwitch: "自动切号",
-			autoSwitchHint: "当前账号返回 401/402/403/429 时，自动切到额度占用最低的其它账号重试。",
+			autoSwitchTip: "401/402/403/429：切到额度占用最低的其它账号重试，出错账号暂停使用一段时间。\n500/502/503/504/529 等临时故障：先在同一账号重试 2 次，仍失败再临时借用其它账号一次。",
+			more: "更多操作",
+			expand: "展开额度",
+			collapse: "收起额度",
 			storeWarn: "vwFactory 数据文件提示（原文件均已保留，未删除）：",
 			encrypted: "Key 已加密",
 			routing: "分配方式",
 			upd: "插件版本",
-			updCurrent: "当前 v{v}",
 			updLatest: "已是最新版本",
 			updNewer: "有新版本 v{n}",
 			updBtn: "更新到 v{n}",
@@ -50,8 +52,7 @@ window.__ModuleLoader__.load({
 			updManual: "这个版本需要重新运行安装程序：下载压缩包后双击 install.bat",
 			updPage: "下载页",
 			updNotes: "更新内容",
-			updChecked: "上次检查 {t}",
-			routingHint: "单账号：所有对话都用当前账号，出错或额度用满时才切换。均衡：每个对话固定在一个账号上（保留缓存），新对话分给剩余额度最多的账号，账号用到 90% 时把对话迁走。",
+			routingTip: "单账号：所有对话都用当前账号，出错或额度用满时才切换。\n均衡：每个对话固定在一个账号上（保留缓存），新对话分给剩余额度最多的账号，账号用到 90% 时把对话迁走。",
 			modeSingle: "单账号",
 			modeBalance: "均衡",
 			modeChanged: "分配方式：{m}",
@@ -68,7 +69,6 @@ window.__ModuleLoader__.load({
 			alertSwitchBalance: "{from} 不可用（{reason}），对话已改用 {to}",
 			reasonQuota: "额度已满",
 			active: "使用中",
-			idle: "待命",
 			switch: "切换",
 			refresh: "刷新",
 			copyKey: "复制 Key",
@@ -79,13 +79,11 @@ window.__ModuleLoader__.load({
 			w5h: "5 小时",
 			wWeek: "周",
 			wMonth: "月",
-			resets: "{t} 重置",
 			resetIn: "{d}后重置",
 			resetSoon: "即将重置",
 			uMin: "{n} 分钟",
 			uHour: "{n} 小时",
 			uDay: "{n} 天",
-			used: "已用",
 			usedPct: "已用 {p}%",
 			leftPct: "剩余 {p}%",
 			pillUsed: "Factory 已用",
@@ -142,12 +140,14 @@ window.__ModuleLoader__.load({
 			cancel: "Cancel",
 			openExternal: "Open in browser",
 			autoSwitch: "Auto failover",
-			autoSwitchHint: "On 401/402/403/429, switch to the account with the lowest quota usage and retry.",
+			autoSwitchTip: "401/402/403/429: retry on the account with the lowest usage and bench the failing one for a while.\n500/502/503/504/529: retry twice on the same account, then borrow another account once.",
+			more: "More actions",
+			expand: "Show quota",
+			collapse: "Hide quota",
 			storeWarn: "vwFactory data file notices (original files were kept):",
 			encrypted: "Keys encrypted",
 			routing: "Routing",
 			upd: "Plugin version",
-			updCurrent: "Current v{v}",
 			updLatest: "Up to date",
 			updNewer: "v{n} available",
 			updBtn: "Update to v{n}",
@@ -162,8 +162,7 @@ window.__ModuleLoader__.load({
 			updManual: "This version needs the installer: download the zip and run install.bat",
 			updPage: "Download page",
 			updNotes: "What's new",
-			updChecked: "Checked {t}",
-			routingHint: "Single: every conversation uses the active account; switch only on errors or full quota. Balance: each conversation sticks to one account (keeps its cache); new conversations go to the account with the most quota left and move away at 90%.",
+			routingTip: "Single: every conversation uses the active account; switch only on errors or full quota.\nBalance: each conversation sticks to one account (keeps its cache); new conversations go to the account with the most quota left and move away at 90%.",
 			modeSingle: "Single",
 			modeBalance: "Balance",
 			modeChanged: "Routing: {m}",
@@ -180,7 +179,6 @@ window.__ModuleLoader__.load({
 			alertSwitchBalance: "{from} unavailable ({reason}); conversation moved to {to}",
 			reasonQuota: "quota full",
 			active: "Active",
-			idle: "Idle",
 			switch: "Switch",
 			refresh: "Refresh",
 			copyKey: "Copy key",
@@ -191,13 +189,11 @@ window.__ModuleLoader__.load({
 			w5h: "5h",
 			wWeek: "Week",
 			wMonth: "Month",
-			resets: "resets {t}",
 			resetIn: "resets in {d}",
 			resetSoon: "resetting",
 			uMin: "{n}m",
 			uHour: "{n}h",
 			uDay: "{n}d",
-			used: "used",
 			usedPct: "{p}% used",
 			leftPct: "{p}% left",
 			pillUsed: "Factory used",
@@ -282,7 +278,10 @@ window.__ModuleLoader__.load({
 			danger: "var(--dsw-alias-state-error-primary)",
 			warn: "var(--dsw-alias-state-warn-primary, #d98a00)",
 			ok: "var(--dsw-alias-state-success-primary, #2e9e5b)",
-			track: "var(--dsw-alias-bg-layer-2, rgba(127,127,127,.15))"
+			// Neutral reference track for rings / bars / segmented control. bg-layer-2
+			// is (near) identical to the card fill in DSH themes, which made the ring
+			// background invisible; tint from the text colour so it shows in light and dark.
+			track: "color-mix(in srgb, var(--dsw-alias-label-primary, #888) 11%, transparent)"
 		};
 		const CSS = `
 .vwf-btn{font:inherit;font-size:13px;line-height:20px;padding:4px 12px;border-radius:8px;cursor:pointer;
@@ -307,30 +306,50 @@ window.__ModuleLoader__.load({
   background:#fff;transition:transform .15s;box-shadow:0 1px 2px rgba(0,0,0,.2)}
 .vwf-switch[aria-checked=true]::after{transform:translateX(14px)}
 .vwf-switch:focus-visible{outline:2px solid ${V.accent};outline-offset:2px}
-.vwf-qgroups{display:flex;flex-wrap:wrap;gap:10px}
-.vwf-qgroup{flex:1 1 300px;min-width:0;border:.5px solid ${V.border};border-radius:10px;padding:8px 10px 10px;
-  display:flex;flex-direction:column;gap:6px}
-.vwf-qgroup-title{font-size:12px;color:${V.fg2};display:flex;justify-content:space-between;gap:8px}
-.vwf-rings{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
-.vwf-ring{display:flex;flex-direction:column;align-items:center;gap:2px;min-width:0}
+.vwf-rings{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;padding:2px 0}
+.vwf-ring{display:flex;flex-direction:column;align-items:center;gap:6px;min-width:0;cursor:default}
 .vwf-ring-box{position:relative;width:56px;height:56px}
 .vwf-ring-box svg{display:block;transform:rotate(-90deg)}
-.vwf-ring-bg{fill:none;stroke:${V.track}}
+.vwf-ring-bg{fill:none;stroke:rgba(127,127,127,.18);stroke:${V.track}}
+.vwf-list{padding:0;gap:0}
+.vwf-row{display:flex;align-items:center;gap:12px;padding:11px 14px;min-width:0}
+.vwf-row + .vwf-row,.vwf-row + .vwf-notes{border-top:.5px solid ${V.border}}
+.vwf-row-main{flex:1;min-width:0}
+.vwf-row-title{font-size:14px;font-weight:500}
+.vwf-row-hint{font-size:12px;color:${V.fg3};margin-top:2px}
+.vwf-notes{padding:8px 14px 12px;font-size:12px;color:${V.fg2}}
+.vwf-acc-head{display:flex;align-items:center;gap:8px;min-width:0;cursor:pointer}
+.vwf-acc-name{font-size:14px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.vwf-acc-sum{display:flex;align-items:center;gap:6px;font-size:12px;color:${V.fg3};white-space:nowrap;font-variant-numeric:tabular-nums;overflow:hidden}
+.vwf-chev{flex:none;width:20px;height:20px;border:0;padding:0;border-radius:5px;background:transparent;color:${V.fg3};cursor:pointer;
+  display:grid;place-items:center;transition:transform .15s}
+.vwf-chev[aria-expanded=true]{transform:rotate(90deg)}
+.vwf-chev:hover{background:${V.hover}}
+.vwf-chev:focus-visible{outline:2px solid ${V.accent}}
+.vwf-badge{font-size:11px;padding:0 7px;border-radius:9px;line-height:18px;flex:none}
+.vwf-more{position:relative;flex:none}
+.vwf-btn.icon{padding:2px 8px;font-size:14px;line-height:18px;letter-spacing:1px}
+.vwf-menu{position:absolute;right:0;top:calc(100% + 4px);z-index:30;min-width:128px;padding:4px;border-radius:10px;
+  background:var(--dsw-alias-bg-layer-1,#fff);border:.5px solid ${V.border};
+  box-shadow:0 6px 24px rgba(0,0,0,.16);display:flex;flex-direction:column}
+.vwf-menu button,.vwf-menu a{font:inherit;font-size:13px;text-align:left;padding:6px 10px;border:0;border-radius:6px;
+  background:transparent;color:${V.fg};cursor:pointer;white-space:nowrap;text-decoration:none}
+.vwf-menu button:hover,.vwf-menu a:hover{background:${V.hover}}
+.vwf-menu .danger{color:${V.danger}}
 .vwf-ring-fg{fill:none;stroke-linecap:round;transition:stroke-dashoffset .5s ease;animation:vwf-ring .7s ease-out}
 @keyframes vwf-ring{from{stroke-dashoffset:var(--vwf-c)}}
 .vwf-ring-val{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;line-height:1}
 .vwf-ring-val b{font-size:13px;font-weight:600;font-variant-numeric:tabular-nums}
-.vwf-ring-val small{font-size:9.5px;color:${V.fg3};margin-top:2px}
 .vwf-ring-label{font-size:12px;color:${V.fg}}
-.vwf-ring-reset{font-size:10.5px;color:${V.fg3};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
 .vwf-chip{display:flex;justify-content:space-between;gap:8px;align-items:center;padding:5px 10px;
   border:.5px solid ${V.border};border-radius:8px;font-size:12px;min-width:0}
 .vwf-chip span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.vwf-seg{display:inline-flex;flex:none;padding:2px;border-radius:9px;background:${V.track};gap:2px}
+.vwf-seg{display:inline-flex;flex:none;padding:2px;border-radius:9px;background:rgba(127,127,127,.15);background:${V.track};gap:2px}
 .vwf-seg button{font:inherit;font-size:12px;line-height:18px;padding:3px 12px;border:0;border-radius:7px;cursor:pointer;
   background:transparent;color:${V.fg2};white-space:nowrap}
 .vwf-seg button[aria-pressed=true]{background:var(--dsw-alias-bg-layer-1,#fff);color:${V.fg};box-shadow:0 1px 2px rgba(0,0,0,.12);font-weight:500}
 .vwf-seg button:focus-visible{outline:2px solid ${V.accent};outline-offset:1px}
+.vwf-seg.sm button{font-size:11px;line-height:16px;padding:2px 9px}
 .vwf-toast{position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:1200;max-width:min(560px,calc(100vw - 32px));
   padding:8px 14px;border-radius:10px;font-size:13px;line-height:18px;color:${V.fg};
   background:var(--dsw-specific-menu,var(--dsw-alias-bg-layer-1));border:.5px solid ${V.border};
@@ -345,16 +364,6 @@ window.__ModuleLoader__.load({
 			tag.dataset.pluginCss = id;
 			tag.textContent = CSS;
 			document.head.appendChild(tag);
-		}
-		const HUES = [214, 262, 288, 174, 24, 340, 196, 140];
-		function avatarStyle(name) {
-			let x = 0;
-			for (const c of String(name)) x = (x * 31 + c.charCodeAt(0)) >>> 0;
-			return {
-				width: 32, height: 32, borderRadius: 16, flex: "none", display: "grid", placeItems: "center",
-				color: "#fff", fontWeight: 600, fontSize: 14,
-				background: `linear-gradient(135deg,hsl(${HUES[x % 8]} 70% 55%),hsl(${HUES[(x >> 3) % 8]} 70% 42%))`
-			};
 		}
 		const timeStr = (ms) => new Date(ms).toLocaleString(undefined, { hour12: false, month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 
@@ -373,9 +382,8 @@ window.__ModuleLoader__.load({
 		function QuotaRing({ t, label, bucket }) {
 			const p = Math.min(100, Math.max(0, Math.round(bucket.usedPercent)));
 			const color = p >= 90 ? V.danger : p >= 70 ? V.warn : V.accent;
-			const reset = resetIn(t, bucket.resetsAt);
 			const tip = `${label}: ${fmt(t("usedPct"), { p })} · ${fmt(t("leftPct"), { p: 100 - p })}` +
-				(bucket.resetsAt ? ` · ${fmt(t("resets"), { t: timeStr(bucket.resetsAt) })}` : "");
+				(bucket.resetsAt ? `\n${resetIn(t, bucket.resetsAt)}（${timeStr(bucket.resetsAt)}）` : "");
 			const size = (RING_R + RING_W) * 2;
 			return h("div", { className: "vwf-ring", title: tip },
 				h("div", { className: "vwf-ring-box", style: { width: size, height: size } },
@@ -389,39 +397,109 @@ window.__ModuleLoader__.load({
 						}) : null
 					),
 					h("div", { className: "vwf-ring-val" },
-						h("b", { style: { color: p >= 90 ? V.danger : V.fg } }, `${p}%`),
-						h("small", null, t("used"))
+						h("b", { style: { color: p >= 90 ? V.danger : V.fg } }, `${p}%`)
 					)
 				),
-				h("span", { className: "vwf-ring-label" }, label),
-				reset ? h("span", { className: "vwf-ring-reset" }, reset) : null
+				h("span", { className: "vwf-ring-label" }, label)
 			);
 		}
-		function QuotaGroup({ t, title, hint, buckets }) {
-			const items = buckets.filter((b) => b[1]);
-			if (items.length === 0) return null;
-			const worst = Math.max(...items.map(([, b]) => b.usedPercent));
-			return h("div", { className: "vwf-qgroup", title: hint },
-				h("div", { className: "vwf-qgroup-title" },
-					h("span", null, title),
-					h("span", { style: { color: worst >= 90 ? V.danger : V.fg3 } }, fmt(t("leftPct"), { p: Math.max(0, 100 - Math.round(worst)) }))
-				),
-				h("div", { className: "vwf-rings" }, ...items.map(([label, b]) => h(QuotaRing, { key: label, t, label, bucket: b })))
-			);
+		const windowsOf = (t, q, kind) => (kind === "std"
+			? [[t("w5h"), q.standard5h], [t("wWeek"), q.standardWeekly], [t("wMonth"), q.standardMonthly]]
+			: [[t("w5h"), q.core5h], [t("wWeek"), q.coreWeekly], [t("wMonth"), q.coreMonthly]]).filter((x) => x[1]);
+		const hasCore = (q) => !!q && !q.error && windowsOf((k) => k, q, "core").length > 0;
+		// Which pool the quota views show ("std" default, "core" on demand); shared
+		// by every card / pane and remembered across reloads.
+		const quotaView = (() => {
+			const LS = "vwfactory.quotaView";
+			let v = "std";
+			try { if (localStorage.getItem(LS) === "core") v = "core"; } catch {}
+			const subs = new Set();
+			return {
+				get: () => v,
+				set(next) { v = next; try { localStorage.setItem(LS, next); } catch {} for (const f of subs) f(); },
+				subscribe(f) { subs.add(f); return () => { subs.delete(f); }; }
+			};
+		})();
+		const useQuotaView = () => React.useSyncExternalStore(quotaView.subscribe, quotaView.get, quotaView.get);
+		/** Small 主额度 / 副额度 switch; renders nothing when the account has no Core pool. */
+		function PoolSwitch({ t, q }) {
+			const view = useQuotaView();
+			if (!hasCore(q)) return null;
+			return h("div", { className: "vwf-seg sm", role: "group", onClick: (e) => e.stopPropagation(), title: view === "core" ? t("coreHint") : t("stdHint") },
+				...["std", "core"].map((k) => h("button", { key: k, type: "button", "aria-pressed": view === k, onClick: () => quotaView.set(k) }, t(k))));
 		}
 		function Quota({ t, q }) {
+			const view = useQuotaView();
 			if (!q) return h("div", { style: { fontSize: 12, color: V.fg3 } }, t("noQuota"));
 			if (q.error) return h("div", { style: { fontSize: 12, color: V.danger, wordBreak: "break-all" } }, fmt(t("quotaError"), { e: q.error }));
-			const extra = [];
-			if (q.planType) extra.push(fmt(t("plan"), { p: q.planType }));
-			if (typeof q.extraUsageBalanceCents === "number") extra.push(fmt(t("balance"), { v: (q.extraUsageBalanceCents / 100).toFixed(2) }));
-			return h("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
-				h("div", { className: "vwf-qgroups" },
-					h(QuotaGroup, { t, title: t("std"), hint: t("stdHint"), buckets: [[t("w5h"), q.standard5h], [t("wWeek"), q.standardWeekly], [t("wMonth"), q.standardMonthly]] }),
-					h(QuotaGroup, { t, title: t("core"), hint: t("coreHint"), buckets: [[t("w5h"), q.core5h], [t("wWeek"), q.coreWeekly], [t("wMonth"), q.coreMonthly]] })
-				),
-				extra.length ? h("div", { style: { fontSize: 11, color: V.fg3 } }, extra.join(" · ")) : null
-			);
+			const std = windowsOf(t, q, "std");
+			const core = windowsOf(t, q, "core");
+			const items = view === "core" && core.length ? core : std.length ? std : core;
+			if (!items.length) return h("div", { style: { fontSize: 12, color: V.fg3 } }, t("noQuota"));
+			return h("div", { className: "vwf-rings" }, ...items.map(([label, b]) => h(QuotaRing, { key: label, t, label, bucket: b })));
+		}
+		/** One-line summary for a collapsed account: mini ring + 5h / week / month. */
+		function QuotaSummary({ t, q }) {
+			if (!q) return h("span", { className: "vwf-acc-sum" }, "—");
+			if (q.error) return h("span", { className: "vwf-acc-sum", style: { color: V.danger }, title: q.error }, t("pillQuotaError"));
+			const std = windowsOf(t, q, "std");
+			if (!std.length) return h("span", { className: "vwf-acc-sum" }, "—");
+			return h("span", { className: "vwf-acc-sum" },
+				h(MiniRing, { p: worstOf(q) }),
+				...std.flatMap(([label, b], i) => {
+					const p = Math.round(b.usedPercent);
+					const el = h("span", { key: label, style: p >= 90 ? { color: V.danger } : p >= 70 ? { color: V.warn } : null }, `${label === t("w5h") ? t("w5hShort") : label} ${p}%`);
+					return i ? [h("span", { key: label + "-s", style: { opacity: 0.5 } }, "·"), el] : [el];
+				}));
+		}
+		/**
+		 * First fully opaque background colour behind `el` (walking up the tree), so a
+		 * menu can sit on a solid fill instead of DSH's translucent menu token.
+		 */
+		function opaqueBgBehind(el) {
+			for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
+				const c = getComputedStyle(n).backgroundColor;
+				const m = /rgba?\(([^)]+)\)/.exec(c || "");
+				if (!m) continue;
+				const parts = m[1].split(/[\s,/]+/).filter(Boolean);
+				const a = parts.length > 3 ? parseFloat(parts[3]) : 1;
+				if (a >= 0.999) return c;
+			}
+			const dark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+			return dark ? "#1e1f22" : "#ffffff";
+		}
+		/** "⋯" overflow menu. Items: { key, label, run, danger?, confirm?, href? }. */
+		function MoreMenu({ t, items, disabled }) {
+			const [open, setOpen] = useState(false);
+			const [armed, setArmed] = useState(null);
+			const [bg, setBg] = useState(null);
+			const ref = useRef(null);
+			React.useLayoutEffect(() => { if (open && ref.current) setBg(opaqueBgBehind(ref.current.parentElement)); }, [open]);
+			useEffect(() => {
+				if (!open) { setArmed(null); return; }
+				const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+				const onKey = (e) => { if (e.key === "Escape") setOpen(false); };
+				document.addEventListener("pointerdown", onDown, true);
+				document.addEventListener("keydown", onKey);
+				return () => { document.removeEventListener("pointerdown", onDown, true); document.removeEventListener("keydown", onKey); };
+			}, [open]);
+			const list = items.filter(Boolean);
+			if (!list.length) return null;
+			return h("div", { ref, className: "vwf-more", onClick: (e) => e.stopPropagation() },
+				h("button", {
+					type: "button", className: "vwf-btn sm icon", title: t("more"), "aria-label": t("more"),
+					"aria-haspopup": "menu", "aria-expanded": open, disabled, onClick: () => setOpen((v) => !v)
+				}, "⋯"),
+				open ? h("div", { className: "vwf-menu", role: "menu", style: bg ? { background: bg } : undefined }, ...list.map((it) => it.href
+					? h("a", { key: it.key, role: "menuitem", href: it.href, target: "_blank", rel: "noopener", onClick: () => setOpen(false) }, it.label)
+					: h("button", {
+						key: it.key, type: "button", role: "menuitem", className: it.danger ? "danger" : undefined,
+						onClick: () => {
+							if (it.confirm && armed !== it.key) { setArmed(it.key); return; }
+							setOpen(false);
+							it.run();
+						}
+					}, armed === it.key ? it.confirm : it.label))) : null);
 		}
 		/** Cooldown badge + live conversation count (balance mode). */
 		function AccStatus({ t, acc }) {
@@ -442,43 +520,46 @@ window.__ModuleLoader__.load({
 					onClick: () => { if (cur !== m) onChange(m); }
 				}, t(m === "balance" ? "modeBalance" : "modeSingle"))));
 		}
-		function AccountCard({ t, acc, busy, onAction }) {
-			const [confirm, setConfirm] = useState(false);
-			useEffect(() => {
-				if (!confirm) return;
-				const timer = setTimeout(() => setConfirm(false), 3000);
-				return () => clearTimeout(timer);
-			}, [confirm]);
+		function AccountCard({ t, acc, busy, onAction, defaultOpen }) {
+			const [open, setOpen] = useState(!!defaultOpen);
+			// expand an account when it becomes the active one
+			useEffect(() => { if (defaultOpen) setOpen(true); }, [defaultOpen]);
 			const name = acc.label || acc.email || acc.id;
-			const meta = [acc.orgId ? `org ${String(acc.orgId).slice(0, 12)}…` : "", acc.fingerprint ? `key …${acc.fingerprint}` : "", acc.kind === "oauth" ? "OAuth" : ""].filter(Boolean).join(" · ");
-			return h("li", { className: "vwf-card" + (acc.active ? " on" : ""), style: { listStyle: "none" } },
-				h("div", { style: { display: "flex", alignItems: "center", gap: 10, minWidth: 0 } },
-					h("div", { style: avatarStyle(name), "aria-hidden": true }, String(name)[0].toUpperCase()),
-					h("div", { style: { flex: 1, minWidth: 0 } },
-						h("div", { style: { display: "flex", alignItems: "center", gap: 8, minWidth: 0 } },
-							h("span", { style: { fontSize: 14, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }, title: name }, name),
-							h("span", {
-								style: {
-									fontSize: 11, padding: "0 7px", borderRadius: 9, lineHeight: "18px", flex: "none",
-									color: acc.active ? "#fff" : V.fg3, background: acc.active ? V.ok : "transparent",
-									border: acc.active ? "0" : `.5px solid ${V.border}`
-								}
-							}, acc.active ? t("active") : t("idle")),
-							h(AccStatus, { t, acc })
-						),
-						meta ? h("div", { style: { fontSize: 11, color: V.fg3, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, meta) : null
-					),
-					h("div", { style: { display: "flex", gap: 6, flex: "none" } },
-						acc.active ? null : h("button", { type: "button", className: "vwf-btn sm", disabled: busy, onClick: () => onAction("switch", acc) }, t("switch")),
-						h("button", { type: "button", className: "vwf-btn sm", disabled: busy, onClick: () => onAction("refresh", acc) }, t("refresh")),
-						h("button", { type: "button", className: "vwf-btn sm", disabled: busy, onClick: () => onAction("copy", acc) }, t("copyKey")),
-						h("button", {
-							type: "button", className: "vwf-btn sm danger", disabled: busy,
-							onClick: () => { if (confirm) { setConfirm(false); onAction("remove", acc); } else setConfirm(true); }
-						}, confirm ? t("confirmRemove") : t("remove"))
-					)
+			const q = acc.quota;
+			const meta = [
+				acc.email && acc.email !== name ? acc.email : "",
+				acc.orgId ? `org ${acc.orgId}` : "",
+				acc.fingerprint ? `key …${acc.fingerprint}` : "",
+				acc.kind === "oauth" ? "OAuth" : "",
+				q && q.planType ? fmt(t("plan"), { p: q.planType }) : "",
+				q && typeof q.extraUsageBalanceCents === "number" ? fmt(t("balance"), { v: (q.extraUsageBalanceCents / 100).toFixed(2) }) : ""
+			].filter(Boolean).join("\n");
+			const toggle = () => setOpen((v) => !v);
+			return h("li", { className: "vwf-card" + (acc.active ? " on" : ""), style: { listStyle: "none", gap: open ? 12 : 0 } },
+				h("div", { className: "vwf-acc-head", onClick: toggle },
+					h("button", {
+						type: "button", className: "vwf-chev", "aria-expanded": open, title: open ? t("collapse") : t("expand"),
+						onClick: (e) => { e.stopPropagation(); toggle(); }
+					}, h("svg", { width: 10, height: 10, viewBox: "0 0 10 10", "aria-hidden": true },
+						h("path", { d: "M3.5 1.5 7 5 3.5 8.5", fill: "none", stroke: "currentColor", strokeWidth: 1.6, strokeLinecap: "round", strokeLinejoin: "round" }))),
+					h("span", { className: "vwf-acc-name", title: meta ? `${name}\n${meta}` : name }, name),
+					acc.active ? h("span", { className: "vwf-badge", style: { color: "#fff", background: V.ok } }, t("active")) : null,
+					h(AccStatus, { t, acc }),
+					h("span", { style: { flex: 1 } }),
+					open ? h(PoolSwitch, { t, q: acc.quota }) : h(QuotaSummary, { t, q: acc.quota }),
+					acc.active ? null : h("button", {
+						type: "button", className: "vwf-btn sm", disabled: busy,
+						onClick: (e) => { e.stopPropagation(); onAction("switch", acc); }
+					}, t("switch")),
+					h(MoreMenu, {
+						t, disabled: busy, items: [
+							{ key: "refresh", label: t("refresh"), run: () => onAction("refresh", acc) },
+							{ key: "copy", label: t("copyKey"), run: () => onAction("copy", acc) },
+							{ key: "remove", label: t("remove"), confirm: t("confirmRemove"), danger: true, run: () => onAction("remove", acc) }
+						]
+					})
 				),
-				h(Quota, { t, q: acc.quota })
+				open ? h(Quota, { t, q: acc.quota }) : null
 			);
 		}
 		function AddPanel({ t, onDone, notify }) {
@@ -533,8 +614,7 @@ window.__ModuleLoader__.load({
 			const list = (models || []).filter((m) => !ql || m.id.toLowerCase().includes(ql) || String(m.name || "").toLowerCase().includes(ql));
 			const tier = (m) => (m >= 4 ? V.danger : m >= 1 ? V.warn : V.ok);
 			return h("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
-				h("div", { style: { fontSize: 12, color: V.fg3 } }, t("modelsHint")),
-				h("input", { className: "vwf-input", value: q, placeholder: t("search"), onChange: (e) => setQ(e.target.value) }),
+				h("input", { className: "vwf-input", value: q, placeholder: t("search"), title: t("modelsHint"), onChange: (e) => setQ(e.target.value) }),
 				models === null
 					? h("div", { style: { fontSize: 12, color: V.fg3 } }, t("loading"))
 					: list.length === 0
@@ -580,27 +660,31 @@ window.__ModuleLoader__.load({
 			if (u.pendingRestart) line = h("span", { style: { color: V.accent } }, fmt(t("updPending"), { v: u.installed }));
 			else if (u.newer) line = h("span", { style: { color: V.accent } }, fmt(t("updNewer"), { n: u.latest }));
 			else if (u.checkError) line = h("span", { style: { color: V.fg3 } }, fmt(t("updErr"), { e: u.checkError }));
-			else if (u.latest) line = h("span", null, t("updLatest"));
+
 			const btn = (kind, label, primary) => h("button", { type: "button", className: "vwf-btn sm" + (primary ? " primary" : ""), disabled: !!busy, onClick: () => run(kind) }, label);
-			return h("div", { className: "vwf-card", style: { gap: 6 } },
-				h("div", { style: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" } },
-					h("div", { style: { flex: 1, minWidth: 180 } },
-						h("div", { style: { fontSize: 14, fontWeight: 500 } }, t("upd"), h("span", { style: { fontWeight: 400, color: V.fg3, marginLeft: 8, fontSize: 12 } }, fmt(t("updCurrent"), { v: u.running }))),
-						h("div", { style: { fontSize: 12, marginTop: 2, color: V.fg2 } }, line, u.checkedAt ? h("span", { style: { color: V.fg3 } }, " · " + fmt(t("updChecked"), { t: timeStr(u.checkedAt) })) : null)
+			const showNotes = manual || (u.newer && u.notes);
+			return h(React.Fragment, null,
+				h("div", { className: "vwf-row" },
+					h("div", { className: "vwf-row-main" },
+						h("div", { className: "vwf-row-title" }, t("upd"), h("span", { style: { fontWeight: 400, color: V.fg3, marginLeft: 8, fontSize: 12 } }, "v" + u.running)),
+						line ? h("div", { className: "vwf-row-hint" }, line) : null
 					),
-					h("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } },
-						u.newer && !u.pendingRestart && !manual ? btn("install", busy === "install" ? t("updBusy") : fmt(t("updBtn"), { n: u.latest }), true) : null,
-						u.canRollback && u.rollbackTo ? btn("rollback", fmt(t("updRollback"), { v: u.rollbackTo })) : null,
-						btn("check", busy === "check" ? t("updChecking") : t("updCheck")),
-						h("a", { href: u.page, target: "_blank", rel: "noopener", className: "vwf-btn sm", style: { textDecoration: "none", color: V.fg } }, t("updPage"))
-					)
+					u.newer && !u.pendingRestart && !manual ? btn("install", busy === "install" ? t("updBusy") : fmt(t("updBtn"), { n: u.latest }), true) : null,
+					btn("check", busy === "check" ? t("updChecking") : t("updCheck")),
+					h(MoreMenu, {
+						t, disabled: !!busy, items: [
+							u.canRollback && u.rollbackTo ? { key: "rollback", label: fmt(t("updRollback"), { v: u.rollbackTo }), run: () => run("rollback") } : null,
+							u.page ? { key: "page", label: t("updPage"), href: u.page } : null
+						]
+					})
 				),
-				manual ? h("div", { style: { fontSize: 12, color: V.warn } }, t("updManual")) : null,
-				u.newer && u.notes
-					? h("details", { style: { fontSize: 12, color: V.fg2 } },
-						h("summary", { style: { cursor: "pointer", color: V.fg3 } }, t("updNotes")),
-						h("div", { style: { whiteSpace: "pre-wrap", marginTop: 6, maxHeight: 220, overflow: "auto" } }, u.notes))
-					: null
+				showNotes ? h("div", { className: "vwf-notes" },
+					manual ? h("div", { style: { color: V.warn } }, t("updManual")) : null,
+					u.newer && u.notes
+						? h("details", null,
+							h("summary", { style: { cursor: "pointer", color: V.fg3 } }, t("updNotes")),
+							h("div", { style: { whiteSpace: "pre-wrap", marginTop: 6, maxHeight: 220, overflow: "auto" } }, u.notes))
+						: null) : null
 			);
 		}
 
@@ -703,15 +787,20 @@ window.__ModuleLoader__.load({
 			const stamp = ids.map((i) => i.quota && i.quota.fetchedAt).filter(Boolean).sort().pop();
 			const sub = state ? [fmt(t("accounts"), { n: ids.length }), state.secretsEncrypted ? "🔒 " + t("encrypted") : "", stamp ? fmt(t("updatedAt"), { t: timeStr(stamp) }) : ""].filter(Boolean).join(" · ") : "";
 
-			return h("section", { style: { display: "flex", flexDirection: "column", gap: 14, maxWidth: 760, color: V.fg, position: "relative" } },
-				h("div", { style: { display: "flex", alignItems: "flex-start", gap: 8, flexWrap: "wrap" } },
+			return h("section", { style: { display: "flex", flexDirection: "column", gap: 12, maxWidth: 760, color: V.fg, position: "relative" } },
+				h("div", { style: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" } },
 					h("div", { style: { flex: 1, minWidth: 200 } },
-						h("h2", { style: { margin: 0, fontSize: 18, fontWeight: 600 } }, t("title")),
-						h("p", { style: { margin: "4px 0 0", fontSize: 13, color: V.fg3 } }, t("intro"))
+						h("h2", { style: { margin: 0, fontSize: 18, fontWeight: 600 }, title: [t("intro"), sub].filter(Boolean).join("\n") }, t("title"))
 					),
-					h("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
-						h("button", { type: "button", className: "vwf-btn", disabled: refreshingAll || !state, onClick: () => refreshAll(false) }, refreshingAll ? t("refreshing") : t("refreshAll")),
-						h("button", { type: "button", className: "vwf-btn primary", disabled: !state, onClick: () => setAdding((v) => !v) }, adding ? t("cancel") : t("add"))
+					h("div", { style: { display: "flex", gap: 8, alignItems: "center" } },
+						h("button", { type: "button", className: "vwf-btn", disabled: refreshingAll || !state, onClick: () => refreshAll(false), title: sub || undefined }, refreshingAll ? t("refreshing") : t("refreshAll")),
+						h("button", { type: "button", className: "vwf-btn primary", disabled: !state, onClick: () => setAdding((v) => !v) }, adding ? t("cancel") : t("add")),
+						h(MoreMenu, {
+							t, items: [
+								{ key: "models", label: (showModels ? "✓ " : "") + t("models"), run: () => setShowModels((v) => !v) },
+								{ key: "web", label: t("openExternal"), href: DASHBOARD_URL }
+							]
+						})
 					)
 				),
 				error && !state
@@ -727,40 +816,30 @@ window.__ModuleLoader__.load({
 								h("div", { style: { color: V.warn, fontWeight: 500 } }, t("storeWarn")),
 								...state.storeWarnings.map((w, i) => h("div", { key: i, style: { color: V.fg2, wordBreak: "break-all" } }, w)))
 							: null,
-						h("div", { className: "vwf-card", style: { flexDirection: "row", alignItems: "center", gap: 12 } },
-							h("div", { style: { flex: 1, minWidth: 0 } },
-								h("div", { style: { fontSize: 14, fontWeight: 500 } }, t("autoSwitch")),
-								h("div", { style: { fontSize: 12, color: V.fg3, marginTop: 2 } }, t("autoSwitchHint"))
-							),
-							h("button", {
-								type: "button", role: "switch", className: "vwf-switch", "aria-checked": !!state.autoSwitch,
-								"aria-label": t("autoSwitch"), onClick: () => setAuto(!state.autoSwitch)
-							})
-						),
-						h("div", { className: "vwf-card", style: { flexDirection: "row", alignItems: "center", gap: 12 } },
-							h("div", { style: { flex: 1, minWidth: 0 } },
-								h("div", { style: { fontSize: 14, fontWeight: 500 } }, t("routing")),
-								h("div", { style: { fontSize: 12, color: V.fg3, marginTop: 2 } }, t("routingHint"))
-							),
-							h(ModeSeg, { t, mode: state.routing, onChange: setMode })
-						),
-						h(UpdateCard, { t, notify }),
 						adding ? h(AddPanel, { t, notify, onDone: (close) => { if (close) setAdding(false); void load(); } }) : null,
-						h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 12, color: V.fg3 } },
-							h("span", null, sub),
-							h("a", { href: DASHBOARD_URL, target: "_blank", rel: "noopener", style: { color: V.fg3 } }, t("openExternal"))
-						),
 						ids.length === 0
 							? h("div", { className: "vwf-card", style: { fontSize: 13, color: V.fg3, alignItems: "center", textAlign: "center", padding: 24 } }, t("empty"))
-							: h("ul", { style: { margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 10 } },
-								...ids.map((acc) => h(AccountCard, { key: acc.id, t, acc, busy: busyId === acc.id, onAction }))),
-						h("div", { style: { display: "flex", flexDirection: "column", gap: 8, marginTop: 4 } },
-							h("button", {
-								type: "button", className: "vwf-btn", style: { alignSelf: "flex-start" },
-								"aria-expanded": showModels, onClick: () => setShowModels((v) => !v)
-							}, (showModels ? "▾ " : "▸ ") + t("models")),
-							showModels ? h(Models, { t }) : null
-						)
+							: h("ul", { style: { margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 8 } },
+								...ids.map((acc) => h(AccountCard, { key: acc.id, t, acc, busy: busyId === acc.id, onAction, defaultOpen: acc.active || ids.length === 1 }))),
+						h("div", { className: "vwf-card vwf-list", style: { marginTop: 6 } },
+							h("div", { className: "vwf-row" },
+								h("div", { className: "vwf-row-main", title: t("autoSwitchTip") },
+									h("div", { className: "vwf-row-title" }, t("autoSwitch"))
+								),
+								h("button", {
+									type: "button", role: "switch", className: "vwf-switch", "aria-checked": !!state.autoSwitch,
+									"aria-label": t("autoSwitch"), onClick: () => setAuto(!state.autoSwitch)
+								})
+							),
+							h("div", { className: "vwf-row" },
+								h("div", { className: "vwf-row-main", title: t("routingTip") },
+									h("div", { className: "vwf-row-title" }, t("routing"))
+								),
+								h(ModeSeg, { t, mode: state.routing, onChange: setMode })
+							),
+							h(UpdateCard, { t, notify })
+						),
+						showModels ? h(Models, { t }) : null
 					)
 					: null,
 				toast
@@ -944,7 +1023,7 @@ window.__ModuleLoader__.load({
 					h("button", { type: "button", className: "vwf-btn sm", disabled: refreshing, onClick: () => void hub.refreshQuota(), title: t("refreshAll") }, refreshing ? "…" : "↻")
 				),
 				ids.length > 1 ? h("div", { style: { display: "flex", alignItems: "center", gap: 10 } },
-					h("span", { style: { fontSize: 12, flex: 1, color: V.fg }, title: t("routingHint") }, t("routing")),
+					h("span", { style: { fontSize: 12, flex: 1, color: V.fg }, title: t("routingTip") }, t("routing")),
 					h(ModeSeg, { t, mode: state.routing, onChange: setMode })
 				) : null,
 				shownErr ? h("div", { style: { fontSize: 12, color: V.danger, wordBreak: "break-all" } }, shownErr) : null
@@ -961,17 +1040,15 @@ window.__ModuleLoader__.load({
 				active
 					? h("div", { className: "vwf-card on", style: { gap: 10, padding: "10px 12px" } },
 						h("div", { style: { display: "flex", alignItems: "center", gap: 8, minWidth: 0 } },
-							h("div", { style: { ...avatarStyle(accName(active)), width: 26, height: 26, fontSize: 12 }, "aria-hidden": true }, String(accName(active))[0].toUpperCase()),
-							h("div", { style: { flex: 1, minWidth: 0 } },
-								h("div", { style: { fontSize: 13, fontWeight: 500, color: V.fg, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }, title: accName(active) }, accName(active)),
-								h("div", { style: { fontSize: 11, color: V.ok } }, t("active"))
-							)
+							h("span", { style: { flex: 1, minWidth: 0, fontSize: 13, fontWeight: 500, color: V.fg, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }, title: accName(active) }, accName(active)),
+							h(AccStatus, { t, acc: active }),
+							h(PoolSwitch, { t, q: active.quota })
 						),
 						h(Quota, { t, q: active.quota })
 					)
 					: h("div", { className: "vwf-card", style: { fontSize: 12, color: V.fg3 } }, ids.length ? t("noActive") : t("empty")),
 				h("div", { style: { display: "flex", alignItems: "center", gap: 10 } },
-					h("span", { style: { fontSize: 12, flex: 1, color: V.fg }, title: t("autoSwitchHint") }, t("autoSwitch")),
+					h("span", { style: { fontSize: 12, flex: 1, color: V.fg }, title: t("autoSwitchTip") }, t("autoSwitch")),
 					h("button", { type: "button", role: "switch", className: "vwf-switch", "aria-checked": !!state.autoSwitch, "aria-label": t("autoSwitch"), onClick: () => setAuto(!state.autoSwitch) })
 				),
 				others.length
@@ -1010,7 +1087,6 @@ window.__ModuleLoader__.load({
   backdrop-filter:var(--dsw-menu-backdrop-filter);--dsw-elevation-stroke-color:var(--dsw-alias-border-l1);
   box-shadow:var(--dsw-elevation-prominent,0 8px 32px rgba(0,0,0,.2));color:${V.fg};padding:14px;
   display:flex;flex-direction:column;gap:12px;font-size:12px}
-.vwf-pop .vwf-qgroup{flex-basis:100%}
 `;
 		function ensurePillCss() {
 			const id = "dsh-vwfactory/pill.css";

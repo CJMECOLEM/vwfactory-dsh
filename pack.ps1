@@ -23,6 +23,16 @@ foreach ($f in @("install.ps1", "uninstall.ps1")) {
   [void][System.Management.Automation.Language.Parser]::ParseFile($p, [ref]$null, [ref]$errs)
   if ($errs.Count) { throw "$f 语法错误: $($errs[0].Message)" }
 }
+# 回归测试 (tests\ 不进压缩包): 任一失败即中止打包
+$node = Get-Command node -ErrorAction SilentlyContinue
+if ($node) {
+  foreach ($t in @("i18n", "proxy")) {
+    & $node.Source (Join-Path $here "tests\$t.test.mjs")
+    if ($LASTEXITCODE -ne 0) { throw "tests\$t.test.mjs 未通过，已中止打包" }
+  }
+} else {
+  Write-Host "[pack] 未找到 node，跳过回归测试" -ForegroundColor Yellow
+}
 
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item -ItemType Directory -Force $stage | Out-Null

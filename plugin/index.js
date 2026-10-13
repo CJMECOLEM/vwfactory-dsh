@@ -716,6 +716,11 @@ var AnthropicSseToChat = class {
       if (fr) out += this.chunk({}, fr);
     } else if (type === "message_stop") {
       out += "data: [DONE]\n\n";
+    } else if (type === "error") {
+      const err = isRecord(ev.error) ? ev.error : {};
+      out += `data: ${JSON.stringify({ error: { message: typeof err.message === "string" ? err.message : "upstream stream error", type: typeof err.type === "string" ? err.type : "server_error" } })}
+
+`;
     }
     return out;
   }
@@ -1220,6 +1225,100 @@ boot();
 
 // src/proxy.ts
 var SWITCHABLE_STATUS = /* @__PURE__ */ new Set([401, 402, 403, 429]);
+// Gateway / provider hiccups: retried on the same account with backoff, then
+// tried once on another account. They never bench an account (no cooldown).
+var TRANSIENT_STATUS = /* @__PURE__ */ new Set([500, 502, 503, 504, 529]);
+function envMs(name, fallback) {
+  const v = Number(process.env[name]);
+  return Number.isFinite(v) && v >= 0 ? v : fallback;
+}
+var TRANSIENT_RETRIES = envMs("VWFACTORY_RETRIES", 2);
+var TRANSIENT_SWITCHES = 1;
+// Streaming requests get response headers within seconds; a stalled gateway
+// otherwise leaves DSH spinning forever. Non-streaming requests only return
+// headers after the whole generation, so they get a much longer budget.
+var FIRST_BYTE_TIMEOUT_MS = envMs("VWFACTORY_FIRST_BYTE_TIMEOUT_MS", 12e4);
+var NONSTREAM_TIMEOUT_MS = envMs("VWFACTORY_NONSTREAM_TIMEOUT_MS", 15 * 6e4);
+// Anthropic pings every ~15 s and OpenAI streams keep emitting, so 150 s of
+// silence mid-stream means the connection is dead.
+var IDLE_TIMEOUT_MS = envMs("VWFACTORY_IDLE_TIMEOUT_MS", 15e4);
+var TimeoutError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "VwfTimeoutError";
+  }
+};
+function sleepAbortable(ms, signal) {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve();
+    const t = setTimeout(done, ms);
+    function done() {
+      clearTimeout(t);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    }
+    signal?.addEventListener("abort", done, { once: true });
+  });
+}
+/** Backoff before same-account retry #attempt (0-based): ~1 s, ~3 s, honouring Retry-After up to 20 s. */
+function transientDelay(attempt, res) {
+  const ra = parseRetryAfter(res?.headers?.get?.("retry-after"));
+  if (ra !== void 0) return Math.min(ra, 2e4);
+  return Math.round(1e3 * 3 ** attempt * (0.75 + Math.random() * 0.5));
+}
+/**
+ * Wrap a fetch body so a read that stays silent for idleMs fails with a
+ * TimeoutError (and aborts the upstream request). The timer only runs while
+ * a read is pending, so a slow downstream consumer never trips it.
+ */
+function watchIdle(body, idleMs, abortUpstream) {
+  if (!body || !(idleMs > 0)) return body;
+  const reader = body.getReader();
+  let failed = false;
+  return new ReadableStream({
+    async pull(c) {
+      let timer;
+      const idle = new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          failed = true;
+          reject(new TimeoutError(`vwFactory: upstream stream stalled (no data for ${Math.round(idleMs / 1e3)}s)`));
+        }, idleMs);
+      });
+      try {
+        const { done, value } = await Promise.race([reader.read(), idle]);
+        if (done) c.close();
+        else c.enqueue(value);
+      } catch (e) {
+        if (failed) {
+          abortUpstream?.();
+          reader.cancel(e).catch(() => {
+          });
+        }
+        c.error(e);
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+    cancel(reason) {
+      return reader.cancel(reason).catch(() => {
+      });
+    }
+  });
+}
+/** One protocol-native SSE error frame, so the client surfaces the failure instead of hanging. */
+function sseErrorFrame(kind, message) {
+  if (kind === "anthropic") return `event: error
+data: ${JSON.stringify(anthropicError(message))}
+
+`;
+  if (kind === "responses") return `event: error
+data: ${JSON.stringify({ type: "error", code: "server_error", message, param: null })}
+
+`;
+  return `data: ${JSON.stringify(openaiError(message))}
+
+`;
+}
 var STICKY_TTL_MS = 60 * 6e4;
 var BALANCE_MIGRATE_AT = 90;
 var HOP_HEADERS = /* @__PURE__ */ new Set([
@@ -1550,16 +1649,22 @@ var FactoryProxy = class {
   async failover(identity, upstreamRes, send, convKey) {
     const tried = /* @__PURE__ */ new Set([identity.meta.id]);
     const balance = this.routingMode() === "balance";
-    while (SWITCHABLE_STATUS.has(upstreamRes.status) && await this.autoSwitchOn()) {
-      this.markCooldown(identity.meta, upstreamRes);
+    let transientSwitches = 0;
+    while (await this.autoSwitchOn()) {
+      const transient = TRANSIENT_STATUS.has(upstreamRes.status);
+      if (!SWITCHABLE_STATUS.has(upstreamRes.status) && !(transient && transientSwitches < TRANSIENT_SWITCHES)) break;
+      if (transient) transientSwitches++;
+      else this.markCooldown(identity.meta, upstreamRes);
       if (upstreamRes.status === 429) void this.refreshQuotaFor(identity.meta);
       const next = balance ? this.pickBalanced(tried) ?? this.nextIdentity(tried) : this.nextIdentity(tried);
       if (!next) break;
       tried.add(next.id);
       const status = upstreamRes.status;
       const errText = await upstreamRes.text().catch(() => "");
-      if (!balance) await this.store.setActive(next.id);
-      const retryIdentity = balance ? await this.identityFor(next) : await this.resolveIdentity();
+      // A transient error is not the account's fault: borrow the next account
+      // for this one request without changing the active account.
+      if (!balance && !transient) await this.store.setActive(next.id);
+      const retryIdentity = balance || transient ? await this.identityFor(next) : await this.resolveIdentity();
       let retryRes;
       if (retryIdentity) {
         try {
@@ -1576,8 +1681,8 @@ var FactoryProxy = class {
           })
         };
       }
-      this.emitter.fire(`auto-switched ${identity.meta.label} -> ${next.label} (HTTP ${status} -> ${retryRes.status})`);
-      if (retryRes.ok) {
+      this.emitter.fire(`${transient ? "borrowed" : "auto-switched"} ${identity.meta.label} -> ${next.label} (HTTP ${status} -> ${retryRes.status})`);
+      if (retryRes.ok && !transient) {
         this.store.pushAlert?.({ kind: "switch", from: identity.meta.label, to: next.label, reason: String(status), balance });
         if (balance) this.bindSession(convKey, next.id);
       }
@@ -1735,21 +1840,48 @@ var FactoryProxy = class {
     if (id.orgId) headers["X-Factory-Org-Id"] = id.orgId;
     return headers;
   }
-  async upstream(url, headers, body, clientHeaders, abort) {
+  async upstream(url, headers, body, clientHeaders, abort, streaming = false) {
     const passthrough = {};
     for (const [k, v] of Object.entries(clientHeaders)) {
       if (typeof v === "string" && !HOP_HEADERS.has(k)) passthrough[k] = v;
     }
-    return fetch(url, {
-      method: "POST",
-      headers: {
-        ...passthrough,
-        ...headers,
-        "Content-Type": "application/json",
-        Accept: "application/json, text/event-stream"
-      },
-      body,
-      signal: abort
+    // Per-attempt controller: follows the client abort, and also fires on our
+    // own first-byte / idle timeouts without touching the client's signal.
+    const ac = new AbortController();
+    const onClientAbort = () => ac.abort(abort?.reason);
+    if (abort?.aborted) ac.abort(abort.reason);
+    else abort?.addEventListener("abort", onClientAbort, { once: true });
+    const headerMs = streaming ? FIRST_BYTE_TIMEOUT_MS : NONSTREAM_TIMEOUT_MS;
+    let timedOut = false;
+    const timer = headerMs > 0 ? setTimeout(() => {
+      timedOut = true;
+      ac.abort(new TimeoutError(`vwFactory: upstream did not respond within ${Math.round(headerMs / 1e3)}s`));
+    }, headerMs) : void 0;
+    let res;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: {
+          ...passthrough,
+          ...headers,
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream"
+        },
+        body,
+        signal: ac.signal
+      });
+    } catch (e) {
+      abort?.removeEventListener("abort", onClientAbort);
+      if (timedOut) throw ac.signal.reason;
+      throw e;
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!res.body || res.status < 200 || res.status > 599) return res;
+    return new Response(watchIdle(res.body, IDLE_TIMEOUT_MS, () => ac.abort()), {
+      status: res.status,
+      statusText: res.statusText,
+      headers: res.headers
     });
   }
   async proxyOnce(kind, id, body, clientHeaders, abort) {
@@ -1781,7 +1913,40 @@ var FactoryProxy = class {
         "x-session-id": sessionId
       });
     }
-    return this.upstream(url, headers, JSON.stringify(body), clientHeaders, abort);
+    return this.upstream(url, headers, JSON.stringify(body), clientHeaders, abort, body.stream === true);
+  }
+  /**
+   * proxyOnce plus same-account retries for transient failures (network
+   * errors, timeouts, 5xx/529) with jittered backoff. Throws only when the
+   * last attempt still fails at the network level.
+   */
+  async proxyRetrying(kind, id, body, clientHeaders, abort) {
+    for (let attempt = 0; ; attempt++) {
+      let res;
+      let err;
+      try {
+        res = await this.proxyOnce(kind, id, body, clientHeaders, abort);
+      } catch (e) {
+        if (abort?.aborted) throw e;
+        err = e;
+      }
+      if (res && !TRANSIENT_STATUS.has(res.status)) return res;
+      // A timed-out attempt already cost minutes: retry it at most once.
+      const max = err instanceof TimeoutError ? Math.min(1, TRANSIENT_RETRIES) : TRANSIENT_RETRIES;
+      if (attempt >= max || abort?.aborted) {
+        if (res) return res;
+        throw err;
+      }
+      const wait = transientDelay(attempt, res);
+      this.emitter.fire(`retrying ${id.meta?.label ?? "account"} in ${wait}ms (${res ? `HTTP ${res.status}` : errorMessage(err)})`);
+      await res?.body?.cancel().catch(() => {
+      });
+      await sleepAbortable(wait, abort);
+      if (abort?.aborted) {
+        if (res) return res;
+        throw err;
+      }
+    }
   }
   // ---- MCP (Model Context Protocol) endpoint: /mcp ----
   // Streamable-HTTP JSON-RPC, stateless (no session id). Lets clients like
@@ -2099,7 +2264,11 @@ ${this.mcpAccounts()}`;
     this.lastRelayAt = Date.now();
     this.trackInflight(identity.meta.id, res);
     const abort = new AbortController();
-    req.on("close", () => abort.abort());
+    // res "close" before "finish" = the client went away: cancel upstream too.
+    // (req "close" fires as soon as the request body was read on modern Node.)
+    res.on("close", () => {
+      if (!res.writableFinished) abort.abort();
+    });
     const model = normalizeModel(body.model);
     const bridging = kind === "chat" && isClaudeModel(model);
     const upstreamBody = bridging ? openaiChatToAnthropic(body) : body;
@@ -2109,27 +2278,16 @@ ${this.mcpAccounts()}`;
       if (this.modelCache().availability[model]?.adaptive || wantsThinking && prefersAdaptiveThinking(model))
         this.applyAdaptive(upstreamBody);
     }
+    const fail = (status, message) => {
+      if (res.headersSent || res.destroyed) return;
+      this.sendJson(res, status, kind === "anthropic" ? anthropicError(message) : openaiError(message));
+    };
     let upstreamRes;
     try {
-      upstreamRes = await this.proxyOnce(upstreamKind, identity, upstreamBody, req.headers, abort.signal);
+      upstreamRes = await this.proxyRetrying(upstreamKind, identity, upstreamBody, req.headers, abort.signal);
     } catch (e) {
-      await new Promise((r) => setTimeout(r, 600));
-      try {
-        upstreamRes = await this.proxyOnce(
-          upstreamKind,
-          identity,
-          upstreamBody,
-          req.headers,
-          abort.signal
-        );
-      } catch {
-        this.sendJson(
-          res,
-          502,
-          kind === "anthropic" ? anthropicError(errorMessage(e)) : openaiError(errorMessage(e))
-        );
-        return;
-      }
+      fail(e instanceof TimeoutError ? 504 : 502, errorMessage(e));
+      return;
     }
     if (upstreamKind === "anthropic" && upstreamRes.status === 400) {
       const errText = await upstreamRes.clone().text().catch(() => "");
@@ -2155,26 +2313,75 @@ ${this.mcpAccounts()}`;
         }
       }
     }
-    ({ identity, res: upstreamRes } = await this.failover(
-      identity,
-      upstreamRes,
-      (id) => this.proxyOnce(upstreamKind, id, upstreamBody, req.headers, abort.signal),
-      convKey
-    ));
-    if (upstreamRes.ok) void this.refreshQuotaFor(identity.meta, 3 * 6e4);
-    if (bridging && upstreamRes.status === 200) {
-      await this.pipeBridged(upstreamRes, res, model);
+    try {
+      ({ identity, res: upstreamRes } = await this.failover(
+        identity,
+        upstreamRes,
+        (id) => this.proxyRetrying(upstreamKind, id, upstreamBody, req.headers, abort.signal),
+        convKey
+      ));
+    } catch (e) {
+      fail(502, errorMessage(e));
       return;
     }
+    if (abort.signal.aborted) {
+      await upstreamRes.body?.cancel().catch(() => {
+      });
+      return;
+    }
+    if (upstreamRes.ok) void this.refreshQuotaFor(identity.meta, 3 * 6e4);
+    if (bridging && upstreamRes.status === 200) {
+      await this.pipeBridged(upstreamRes, res, model, abort.signal);
+      return;
+    }
+    const ct = upstreamRes.headers.get("content-type") ?? "application/json";
     res.writeHead(upstreamRes.status, {
-      "Content-Type": upstreamRes.headers.get("content-type") ?? "application/json",
+      "Content-Type": ct,
       "Cache-Control": "no-cache"
     });
     if (!upstreamRes.body) {
       res.end();
       return;
     }
-    Readable.fromWeb(upstreamRes.body).pipe(res);
+    await this.pipeThrough(Readable.fromWeb(upstreamRes.body), res, ct.includes("text/event-stream") ? kind : void 0, abort.signal);
+  }
+  /**
+   * Copy an upstream body to the client. If upstream dies mid-stream, an SSE
+   * response gets a protocol-native error event before it ends, so the client
+   * shows an error instead of waiting forever on a half-open stream.
+   */
+  pipeThrough(stream, res, sseKind, signal) {
+    return new Promise((resolve) => {
+      let tail = "";
+      stream.on("data", (chunk) => {
+        if (sseKind) tail = (tail + chunk.toString("latin1")).slice(-2);
+        if (!res.write(chunk)) {
+          stream.pause();
+          res.once("drain", () => stream.resume());
+        }
+      });
+      stream.on("end", () => {
+        res.end();
+        resolve();
+      });
+      stream.on("error", (e) => {
+        if (signal?.aborted || res.destroyed) {
+          res.destroy();
+        } else {
+          this.emitter.fire(`upstream stream failed: ${errorMessage(e)}`);
+          if (sseKind) {
+            if (tail && tail !== "\n\n") res.write("\n\n");
+            res.write(sseErrorFrame(sseKind, errorMessage(e)));
+          }
+          res.end();
+        }
+        resolve();
+      });
+      res.once("close", () => {
+        if (!res.writableFinished) stream.destroy();
+        resolve();
+      });
+    });
   }
   /** Rewrite enabled-thinking params to the adaptive form new models require. */
   applyAdaptive(body) {
@@ -2196,7 +2403,7 @@ ${this.mcpAccounts()}`;
     return budget >= 16384 ? "high" : budget >= 4096 ? "medium" : budget > 0 ? "low" : "medium";
   }
   /** Pipe an Anthropic response back to an OpenAI-chat client, translated. */
-  async pipeBridged(upstreamRes, res, model) {
+  async pipeBridged(upstreamRes, res, model, signal) {
     const ct = upstreamRes.headers.get("content-type") ?? "";
     if (!upstreamRes.body) {
       res.writeHead(200, { "Content-Type": "application/json" }).end("{}");
@@ -2204,7 +2411,13 @@ ${this.mcpAccounts()}`;
     }
     const stream = Readable.fromWeb(upstreamRes.body);
     if (!ct.includes("text/event-stream")) {
-      const text = await streamToText(stream);
+      let text;
+      try {
+        text = await streamToText(stream);
+      } catch (e) {
+        if (!signal?.aborted && !res.destroyed) this.sendJson(res, e instanceof TimeoutError ? 504 : 502, openaiError(errorMessage(e)));
+        return;
+      }
       try {
         const anthropic = JSON.parse(text);
         this.sendJson(res, 200, anthropicToOpenAIChat(anthropic, model));
@@ -2219,26 +2432,57 @@ ${this.mcpAccounts()}`;
       Connection: "keep-alive"
     });
     const translator = new AnthropicSseToChat(model);
+    // setEncoding uses a StringDecoder, so a multi-byte character (CJK, emoji)
+    // split across two network chunks is no longer turned into U+FFFD.
+    stream.setEncoding("utf8");
     let buf = "";
-    stream.on("data", (chunk) => {
-      buf += chunk.toString("utf8");
-      let idx;
-      while ((idx = buf.indexOf("\n\n")) >= 0) {
-        const rawEvent = buf.slice(0, idx);
-        buf = buf.slice(idx + 2);
-        for (const line of rawEvent.split("\n")) {
-          if (line.startsWith("data:")) {
-            const out = translator.event(line.slice(5).trim());
-            if (out) res.write(out);
-          }
-        }
+    let doneSent = false;
+    const emit = (out) => {
+      if (!out) return;
+      if (out.includes("data: [DONE]")) {
+        if (doneSent) out = out.replace(/data: \[DONE\]\n\n/g, "");
+        doneSent = true;
+        if (!out) return;
       }
+      res.write(out);
+    };
+    const flushEvent = (rawEvent) => {
+      for (const line of rawEvent.split("\n")) {
+        if (line.startsWith("data:")) emit(translator.event(line.slice(5).trim()));
+      }
+    };
+    await new Promise((resolve) => {
+      stream.on("data", (chunk) => {
+        // Normalise CRLF framing; a lone trailing \r waits for its \n.
+        buf = (buf + chunk).replace(/\r\n/g, "\n");
+        let idx;
+        while ((idx = buf.indexOf("\n\n")) >= 0) {
+          const rawEvent = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          flushEvent(rawEvent);
+        }
+      });
+      stream.on("end", () => {
+        if (buf.trim()) flushEvent(buf.replace(/\r$/, ""));
+        buf = "";
+        if (!doneSent) res.write("data: [DONE]\n\n");
+        res.end();
+        resolve();
+      });
+      stream.on("error", (e) => {
+        if (signal?.aborted || res.destroyed) res.destroy();
+        else {
+          this.emitter.fire(`upstream stream failed: ${errorMessage(e)}`);
+          res.write(sseErrorFrame("chat", errorMessage(e)));
+          res.end();
+        }
+        resolve();
+      });
+      res.once("close", () => {
+        if (!res.writableFinished) stream.destroy();
+        resolve();
+      });
     });
-    stream.on("end", () => {
-      res.write("data: [DONE]\n\n");
-      res.end();
-    });
-    stream.on("error", () => res.end());
   }
   async handle(req, res) {
     const url = new URL(req.url ?? "/", "http://localhost");
@@ -2897,7 +3141,7 @@ function resolveDataHome() {
 // src/standalone/store.ts
 import * as fs4 from "node:fs";
 import * as path3 from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import * as zlib2 from "node:zlib";
 import { fileURLToPath } from "node:url";
 
@@ -3011,36 +3255,43 @@ var DPAPI_ENTROPY_B64 = Buffer.from("vwFactory.secrets.v1").toString("base64");
 function dpapiAvailable() {
   return process.platform === "win32" && process.env.VWFACTORY_PLAIN_SECRETS !== "1";
 }
+// Runs asynchronously: a PowerShell cold start takes 0.5-2 s and must not
+// freeze the DSH host event loop (the old execFileSync did, at every startup).
 function dpapi(op, inputB64) {
   const fn = op === "protect" ? "Protect" : "Unprotect";
   const script = `$ErrorActionPreference='Stop';[Console]::OutputEncoding=[Text.Encoding]::UTF8;try{Add-Type -AssemblyName System.Security;$i=[Console]::In.ReadToEnd().Trim();$o=[System.Security.Cryptography.ProtectedData]::${fn}([Convert]::FromBase64String($i),[Convert]::FromBase64String('${DPAPI_ENTROPY_B64}'),[System.Security.Cryptography.DataProtectionScope]::CurrentUser);[Console]::Out.Write([Convert]::ToBase64String($o))}catch{$x=$_.Exception;while($x.InnerException){$x=$x.InnerException};[Console]::Error.Write('VWFERR '+$x.GetType().Name+': '+$x.Message);exit 3}`;
   const exe = path3.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-  let out;
-  try {
-    out = execFileSync(exe, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], {
-      input: inputB64,
-      encoding: "utf8",
-      timeout: 3e4,
-      windowsHide: true,
-      stdio: ["pipe", "pipe", "pipe"]
-    }).replace(/^\uFEFF/, "").trim();
-  } catch (e) {
-    const stderr = String(e?.stderr ?? "");
-    const reason = /VWFERR ([^\r\n]+)/.exec(stderr)?.[1]?.trim() ?? e?.code ?? (stderr.split(/\r?\n/).find((l) => l.trim())?.trim() || "PowerShell failed");
-    throw new Error(`DPAPI ${op}: ${reason}`.slice(0, 200));
-  }
-  if (!/^[A-Za-z0-9+/=]+$/.test(out)) throw new Error("DPAPI returned no data");
-  return out;
+  return new Promise((resolve, reject) => {
+    const child = execFile(
+      exe,
+      ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+      { encoding: "utf8", timeout: 3e4, windowsHide: true, maxBuffer: 16 * 1024 * 1024 },
+      (e, stdout, stderr) => {
+        if (e) {
+          const err = String(stderr ?? "");
+          const reason = /VWFERR ([^\r\n]+)/.exec(err)?.[1]?.trim() ?? e?.code ?? (err.split(/\r?\n/).find((l) => l.trim())?.trim() || "PowerShell failed");
+          reject(new Error(`DPAPI ${op}: ${reason}`.slice(0, 200)));
+          return;
+        }
+        const out = String(stdout ?? "").replace(/^\uFEFF/, "").trim();
+        if (!/^[A-Za-z0-9+/=]+$/.test(out)) reject(new Error("DPAPI returned no data"));
+        else resolve(out);
+      }
+    );
+    child.stdin?.on("error", () => {
+    });
+    child.stdin?.end(inputB64);
+  });
 }
-function encryptSecrets(obj) {
-  const data = dpapi("protect", Buffer.from(JSON.stringify(obj), "utf8").toString("base64"));
+async function encryptSecrets(obj) {
+  const data = await dpapi("protect", Buffer.from(JSON.stringify(obj), "utf8").toString("base64"));
   return { _enc: SECRETS_ENC, data };
 }
 function isEncryptedSecrets(v) {
   return isRecord(v) && v._enc === SECRETS_ENC && typeof v.data === "string";
 }
-function decryptSecrets(env) {
-  const json = Buffer.from(dpapi("unprotect", env.data), "base64").toString("utf8");
+async function decryptSecrets(env) {
+  const json = Buffer.from(await dpapi("unprotect", env.data), "base64").toString("utf8");
   const obj = JSON.parse(json);
   if (!isRecord(obj)) throw new Error("decrypted secrets are not an object");
   return obj;
@@ -3279,46 +3530,56 @@ var FileStore = class {
     });
     if (!Array.isArray(this.state.identities)) this.state.identities = [];
     if (!isRecord(this.state.quotas)) this.state.quotas = {};
-    this.secrets = this.loadSecrets();
-    this.chmod(this.secretsPath);
+    this.secrets = {};
+    const reported = this.recovery.length;
+    this.ready = this.loadSecrets().catch((e) => {
+      this.recovery.push(`secrets.json could not be loaded (${errorMessage(e).slice(0, 160)})`);
+    }).then(() => {
+      this.chmod(this.secretsPath);
+      for (const msg of this.recovery.slice(reported)) console.warn(`[vwFactory] ${msg}`);
+    });
     this.chmod(this.statePath);
     for (const msg of this.recovery) console.warn(`[vwFactory] ${msg}`);
   }
+  /** Resolves once secrets.json is decrypted (DPAPI runs off the event loop). */
+  ready;
+  /** Serializes secrets.json writes so async encryptions never land out of order. */
+  secretsWrite = Promise.resolve();
   /** "dpapi" when secrets.json is encrypted at rest, else "plain". */
   secretsMode = "plain";
   secretsLocked = false;
   dpapiBroken = false;
   lastSecretsJson;
   /** Load secrets, decrypting the DPAPI envelope or migrating a plaintext file. */
-  loadSecrets() {
+  async loadSecrets() {
     const raw = this.readJson(this.secretsPath, {});
     if (isEncryptedSecrets(raw)) {
       try {
-        const s = decryptSecrets(raw);
+        const s = await decryptSecrets(raw);
         this.secretsMode = "dpapi";
         this.lastSecretsJson = JSON.stringify(s);
-        return s;
+        this.secrets = s;
       } catch (e) {
         this.secretsLocked = true;
         this.recovery.push(
           `secrets.json could not be decrypted (${errorMessage(e).split("\n")[0].slice(0, 160)}); the file was left untouched. It only opens under the Windows account that created it; otherwise re-add the accounts.`
         );
-        return {};
       }
+      return;
     }
     const s = isRecord(raw) ? raw : {};
     this.lastSecretsJson = JSON.stringify(s);
+    this.secrets = s;
     if (Object.keys(s).length && fs4.existsSync(this.secretsPath) && dpapiAvailable()) {
-      this.writeSecretsFile(s);
+      await this.writeSecretsFile(s);
       if (this.secretsMode === "dpapi") this.backup(this.secretsPath);
     }
-    return s;
   }
   /** Write secrets.json, encrypted when DPAPI works, plaintext otherwise. */
-  writeSecretsFile(obj) {
+  async writeSecretsFile(obj) {
     if (dpapiAvailable() && !this.dpapiBroken) {
       try {
-        this.writeJson(this.secretsPath, encryptSecrets(obj));
+        this.writeJson(this.secretsPath, await encryptSecrets(obj));
         this.secretsMode = "dpapi";
         return;
       } catch (e) {
@@ -3400,6 +3661,13 @@ var FileStore = class {
     this.notify();
   }
   saveSecrets() {
+    const run = () => this.saveSecretsNow();
+    const p = this.secretsWrite.then(run, run);
+    this.secretsWrite = p.catch(() => {
+    });
+    return p;
+  }
+  async saveSecretsNow() {
     const json = JSON.stringify(this.secrets);
     if (json === this.lastSecretsJson && fs4.existsSync(this.secretsPath)) return;
     if (this.secretsLocked) {
@@ -3415,7 +3683,7 @@ var FileStore = class {
       } catch {
       }
     }
-    this.writeSecretsFile(this.secrets);
+    await this.writeSecretsFile(JSON.parse(json));
     this.lastSecretsJson = json;
     this.chmod(this.secretsPath);
   }
@@ -3496,17 +3764,19 @@ var FileStore = class {
     this.saveState();
   }
   async upsertIdentity(meta, secret) {
+    await this.ready;
     const list = this.state.identities;
     const idx = list.findIndex((i) => i.id === meta.id);
     if (idx >= 0) list[idx] = { ...list[idx], ...meta };
     else list.push(meta);
     this.secrets[meta.id] = { ...this.secrets[meta.id] ?? {}, ...secret };
-    this.saveSecrets();
+    await this.saveSecrets();
     this.saveState();
   }
   async removeIdentity(id) {
+    await this.ready;
     delete this.secrets[id];
-    this.saveSecrets();
+    await this.saveSecrets();
     this.state.identities = this.state.identities.filter((i) => i.id !== id);
     delete this.state.quotas[id];
     if (isRecord(this.state.alertLevels)) delete this.state.alertLevels[id];
@@ -3514,6 +3784,7 @@ var FileStore = class {
     this.saveState();
   }
   async secret(id) {
+    await this.ready;
     return this.secrets[id] ?? {};
   }
   quotas() {

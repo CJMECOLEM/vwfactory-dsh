@@ -36,9 +36,12 @@
 | `plugin/` | DSH 插件：`index.js`（宿主端：本机代理 127.0.0.1:4199、账号/额度/切号）、`client.js`（界面：设置页、额度胶囊、提醒） |
 | `templates/llm-pi-ai.yml` | 安装时写入 `cordis.patch.yml` 的模型提供方配置 |
 | `install.ps1` / `uninstall.ps1` | 安装 / 卸载脚本（`.bat` 为双击入口） |
-| `pack.ps1` | 打包到 `dist/vwfactory-dsh-v<版本>.zip`，版本号取自 `plugin/package.json` |
+| `pack.ps1` | 打包到 `dist/vwfactory-dsh-v<版本>.zip`，版本号取自 `plugin/package.json`；打包前自动跑 `tests/` |
+| `tests/` | 回归测试（不进压缩包）：`proxy.test.mjs` 用模拟上游测代理（中文分包、断流、超时、5xx 重试/借号、429 切号、停止、DPAPI），`i18n.test.mjs` 检查中英文案 |
 
-发布流程：改 `plugin/package.json` 版本号 → 更新 `CHANGELOG.txt` → `powershell -ExecutionPolicy Bypass -File pack.ps1` → 把 zip 上传到 Releases。
+测试：`node tests/proxy.test.mjs`、`node tests/i18n.test.mjs`（需 Node 18+；DPAPI 部分仅 Windows）。
+
+发布流程：改 `plugin/package.json` 版本号 → 更新 `CHANGELOG.txt` → `powershell -ExecutionPolicy Bypass -File pack.ps1`（测试不过会中止）→ 把 zip 上传到 Releases。
 
 ## 说明
 
