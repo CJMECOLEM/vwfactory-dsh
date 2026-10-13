@@ -2305,6 +2305,23 @@ ${this.mcpAccounts()}`;
       this.sendJson(res, 200, { message: "removed" });
       return;
     }
+    if (path5.startsWith("/api/update")) {
+      if (!this.updater && this.store.statePath) this.updater = new Updater(path3.dirname(this.store.statePath), this.store);
+      if (!this.updater) {
+        this.sendJson(res, 400, { error: "updates not supported on this host" });
+        return;
+      }
+      try {
+        if (path5 === "/api/update" && req.method === "GET") this.sendJson(res, 200, await this.updater.status());
+        else if (path5 === "/api/update/check" && req.method === "POST") this.sendJson(res, 200, await this.updater.status(true));
+        else if (path5 === "/api/update/install" && req.method === "POST") this.sendJson(res, 200, await this.updater.install());
+        else if (path5 === "/api/update/rollback" && req.method === "POST") this.sendJson(res, 200, await this.updater.rollback());
+        else this.sendJson(res, 404, { error: "not found" });
+      } catch (e) {
+        this.sendJson(res, e?.manual ? 409 : 500, { error: errorMessage(e), manual: !!e?.manual });
+      }
+      return;
+    }
     if (path5 === "/api/routing" && req.method === "POST") {
       const body = await this.readBody(req);
       if (!this.store.setRoutingMode) {
@@ -2774,6 +2791,8 @@ function resolveDataHome() {
 import * as fs4 from "node:fs";
 import * as path3 from "node:path";
 import { execFileSync } from "node:child_process";
+import * as zlib2 from "node:zlib";
+import { fileURLToPath } from "node:url";
 
 // src/localToken.ts
 import * as fs3 from "node:fs";
@@ -2919,6 +2938,211 @@ function decryptSecrets(env) {
   if (!isRecord(obj)) throw new Error("decrypted secrets are not an object");
   return obj;
 }
+
+// ---- self-update from GitHub Releases ----
+// Downloads the release zip through the GitHub API asset endpoint (served
+// from *.githubusercontent.com, which stays reachable where github.com is
+// not), verifies size + SHA-256 digest, and replaces the files of this
+// plugin directory with the zip's plugin/ folder. The previous files are kept
+// under <data>/plugin-backup/v<old> for one-click rollback. A release whose
+// package.json sets vwfactory.autoUpdateMinFrom above the running version
+// (installer-level changes) must be installed with install.bat instead.
+var UPDATE_REPO = "cjj66619/vwfactory-dsh";
+var UPDATE_API = (process.env.VWFACTORY_UPDATE_API || "https://api.github.com").replace(/\/+$/, "");
+var UPDATE_CACHE_MS = 6 * 36e5;
+var UPDATE_MAX_BYTES = 8 * 1024 * 1024;
+var GH_HEADERS = { "User-Agent": "vwfactory-updater", Accept: "application/vnd.github+json" };
+var PLUGIN_DIR = (() => {
+  try {
+    return path3.dirname(fileURLToPath(import.meta.url));
+  } catch {
+    return void 0;
+  }
+})();
+function readPluginPackage(dir = PLUGIN_DIR) {
+  try {
+    return JSON.parse(fs4.readFileSync(path3.join(dir, "package.json"), "utf8"));
+  } catch {
+    return {};
+  }
+}
+var RUNNING_VERSION = readPluginPackage().version ?? "0.0.0";
+function cmpVer(a, b) {
+  const pa = String(a ?? "").replace(/^v/, "").split(".").map((n) => parseInt(n, 10) || 0);
+  const pb = String(b ?? "").replace(/^v/, "").split(".").map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length, 3); i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (d) return d < 0 ? -1 : 1;
+  }
+  return 0;
+}
+async function fetchLatestRelease() {
+  const r = await fetch(`${UPDATE_API}/repos/${UPDATE_REPO}/releases/latest`, { headers: GH_HEADERS, signal: AbortSignal.timeout(15e3) });
+  if (!r.ok) throw new Error(r.status === 403 ? "GitHub rate limit, try later" : `GitHub HTTP ${r.status}`);
+  const j = await r.json();
+  const asset = (Array.isArray(j.assets) ? j.assets : []).find((a) => /^vwfactory-dsh-v[\d.]+\.zip$/.test(String(a?.name)));
+  return {
+    version: String(j.tag_name ?? "").replace(/^v/, ""),
+    notes: String(j.body ?? "").slice(0, 4e3),
+    page: String(j.html_url ?? `https://github.com/${UPDATE_REPO}/releases/latest`),
+    publishedAt: j.published_at,
+    asset: asset ? { name: asset.name, size: asset.size, digest: asset.digest, url: asset.url } : void 0
+  };
+}
+/** Minimal zip reader (stored / deflate, no zip64): name -> bytes. */
+function readZip(buf) {
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65557); i--) {
+    if (buf.readUInt32LE(i) === 101010256) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) throw new Error("not a zip file");
+  const count = buf.readUInt16LE(eocd + 10);
+  let p = buf.readUInt32LE(eocd + 16);
+  const out = /* @__PURE__ */ new Map();
+  for (let n = 0; n < count; n++) {
+    if (buf.readUInt32LE(p) !== 33639248) throw new Error("bad zip directory");
+    const method = buf.readUInt16LE(p + 10);
+    const csize = buf.readUInt32LE(p + 20);
+    const usize = buf.readUInt32LE(p + 24);
+    const nlen = buf.readUInt16LE(p + 28), elen = buf.readUInt16LE(p + 30), clen = buf.readUInt16LE(p + 32);
+    const local = buf.readUInt32LE(p + 42);
+    const name = buf.toString("utf8", p + 46, p + 46 + nlen).replace(/\\/g, "/");
+    p += 46 + nlen + elen + clen;
+    if (name.endsWith("/")) continue;
+    if (buf.readUInt32LE(local) !== 67324752) throw new Error("bad zip entry");
+    const start = local + 30 + buf.readUInt16LE(local + 26) + buf.readUInt16LE(local + 28);
+    const raw = buf.subarray(start, start + csize);
+    const data = method === 0 ? Buffer.from(raw) : method === 8 ? zlib2.inflateRawSync(raw) : void 0;
+    if (!data) throw new Error(`unsupported zip method ${method}`);
+    if (data.length !== usize) throw new Error(`zip entry ${name} size mismatch`);
+    out.set(name, data);
+  }
+  return out;
+}
+function listFiles(dir, base = dir) {
+  const files = [];
+  for (const ent of fs4.readdirSync(dir, { withFileTypes: true })) {
+    const p = path3.join(dir, ent.name);
+    if (ent.isDirectory()) files.push(...listFiles(p, base));
+    else if (ent.isFile()) files.push(path3.relative(base, p));
+  }
+  return files;
+}
+var Updater = class {
+  constructor(dataDir, store) {
+    this.dataDir = dataDir;
+    this.store = store;
+  }
+  cache;
+  busy = false;
+  diskVersion() {
+    return readPluginPackage().version ?? RUNNING_VERSION;
+  }
+  async status(force = false) {
+    if (force || !this.cache || Date.now() - this.cache.at > UPDATE_CACHE_MS) {
+      try {
+        this.cache = { at: Date.now(), latest: await fetchLatestRelease() };
+      } catch (e) {
+        this.cache = { at: Date.now(), checkError: errorMessage(e), latest: this.cache?.latest };
+        if (force) this.cache.at = 0;
+      }
+    }
+    const disk = this.diskVersion();
+    const latest = this.cache.latest;
+    const last = this.store.state.update;
+    return {
+      running: RUNNING_VERSION,
+      installed: disk,
+      pendingRestart: cmpVer(disk, RUNNING_VERSION) !== 0,
+      latest: latest?.version,
+      newer: !!latest && cmpVer(latest.version, disk) > 0,
+      notes: latest?.notes,
+      page: latest?.page ?? `https://github.com/${UPDATE_REPO}/releases/latest`,
+      checkedAt: this.cache.at || Date.now(),
+      checkError: this.cache.checkError,
+      canRollback: !!(last?.backup && fs4.existsSync(last.backup) && cmpVer(last.to, disk) === 0),
+      rollbackTo: last?.from,
+      supported: !!PLUGIN_DIR
+    };
+  }
+  assertPluginDir() {
+    if (!PLUGIN_DIR || readPluginPackage().name !== "dsh-vwfactory") throw new Error("plugin directory not recognized; update with install.bat");
+  }
+  async install() {
+    if (this.busy) throw new Error("an update is already running");
+    this.busy = true;
+    try {
+      this.assertPluginDir();
+      const from = this.diskVersion();
+      const rel = await fetchLatestRelease();
+      if (cmpVer(rel.version, from) <= 0) return { message: `already up to date (v${from})`, upToDate: true };
+      if (!rel.asset) throw new Error("the latest release has no package attached");
+      if (!/^sha256:[0-9a-f]{64}$/.test(String(rel.asset.digest))) throw new Error("the release package has no SHA-256 digest; download it manually");
+      if (rel.asset.size > UPDATE_MAX_BYTES) throw new Error("release package unexpectedly large");
+      const r = await fetch(rel.asset.url, { headers: { ...GH_HEADERS, Accept: "application/octet-stream" }, redirect: "follow", signal: AbortSignal.timeout(9e4) });
+      if (!r.ok) throw new Error(`download failed: HTTP ${r.status}`);
+      const buf = Buffer.from(await r.arrayBuffer());
+      if (buf.length !== rel.asset.size) throw new Error(`download incomplete (${buf.length}/${rel.asset.size} bytes)`);
+      const sha = crypto.createHash("sha256").update(buf).digest("hex");
+      if (`sha256:${sha}` !== rel.asset.digest) throw new Error("download checksum mismatch; not installed");
+      const entries = readZip(buf);
+      const prefix = `vwfactory-dsh-v${rel.version}/plugin/`;
+      const files = [];
+      for (const [name, data] of entries) {
+        if (!name.startsWith(prefix)) continue;
+        const rel2 = name.slice(prefix.length);
+        if (!rel2 || rel2.split("/").some((s) => !s || s === "." || s === "..") || /[:\\]/.test(rel2)) throw new Error(`unsafe path in package: ${name}`);
+        files.push([rel2, data]);
+      }
+      const get = (n) => files.find(([f]) => f === n)?.[1];
+      for (const need of ["package.json", "index.js", "client.js"]) if (!get(need)?.length) throw new Error(`package is missing plugin/${need}`);
+      const pkg = JSON.parse(get("package.json").toString("utf8"));
+      if (pkg.name !== "dsh-vwfactory" || pkg.version !== rel.version) throw new Error("package metadata does not match the release");
+      const minFrom = pkg.vwfactory?.autoUpdateMinFrom;
+      if (minFrom && cmpVer(from, minFrom) < 0) {
+        const err = new Error(`v${rel.version} needs a full reinstall: download it and run install.bat`);
+        err.manual = true;
+        throw err;
+      }
+      const backup = path3.join(this.dataDir, "plugin-backup", `v${from}`);
+      fs4.rmSync(backup, { recursive: true, force: true });
+      for (const f of listFiles(PLUGIN_DIR)) {
+        const dst = path3.join(backup, f);
+        fs4.mkdirSync(path3.dirname(dst), { recursive: true });
+        fs4.copyFileSync(path3.join(PLUGIN_DIR, f), dst);
+      }
+      // package.json last: until it is written the plugin still reports the old version.
+      files.sort(([a], [b]) => (a === "package.json") - (b === "package.json"));
+      for (const [f, data] of files) {
+        const dst = path3.join(PLUGIN_DIR, ...f.split("/"));
+        fs4.mkdirSync(path3.dirname(dst), { recursive: true });
+        atomicWriteFileSync(dst, data);
+      }
+      this.store.state.update = { from, to: rel.version, at: Date.now(), backup };
+      this.store.saveState();
+      this.cache = void 0;
+      return { message: `updated v${from} -> v${rel.version}; restart DSH to apply`, from, to: rel.version };
+    } finally {
+      this.busy = false;
+    }
+  }
+  async rollback() {
+    this.assertPluginDir();
+    const last = this.store.state.update;
+    if (!last?.backup || !fs4.existsSync(last.backup)) throw new Error("no backup to roll back to");
+    const files = listFiles(last.backup);
+    if (!files.includes("package.json")) throw new Error("backup is incomplete");
+    files.sort((a, b) => (a === "package.json") - (b === "package.json"));
+    for (const f of files) atomicWriteFileSync(path3.join(PLUGIN_DIR, f), fs4.readFileSync(path3.join(last.backup, f)));
+    this.store.state.update = { ...last, rolledBackAt: Date.now(), backup: void 0 };
+    this.store.saveState();
+    this.cache = void 0;
+    return { message: `rolled back to v${last.from}; restart DSH to apply`, to: last.from };
+  }
+};
 
 // src/standalone/store.ts
 var TOKEN_REFRESH_WINDOW_MS = 9e4;
@@ -3298,6 +3522,10 @@ var UI_RPC_ALLOWED = {
   "POST /api/remove": true,
   "POST /api/failover": true,
   "POST /api/routing": true,
+  "GET /api/update": true,
+  "POST /api/update/check": true,
+  "POST /api/update/install": true,
+  "POST /api/update/rollback": true,
   "POST /api/refresh": true,
   "POST /api/export": true
 };

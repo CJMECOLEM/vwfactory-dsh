@@ -25,7 +25,7 @@
 
 在输入框右侧的模型选择里，选 Factory (Claude) / Factory (GPT) / Factory 下的模型。
 
-更新：下载新压缩包、解压、再双击 `install.bat`，账号保留。卸载：双击 `uninstall.bat`（加 `-RemoveData` 连账号数据一起删）。
+更新：DSH 设置 → Factory 账号 → 插件版本 → 点「更新」，然后重启 DSH（也可以下载新压缩包重新运行 `install.bat`，账号保留）。卸载：双击 `uninstall.bat`（加 `-RemoveData` 连账号数据一起删）。
 
 更多说明见 [README.txt](README.txt)，更新记录见 [CHANGELOG.txt](CHANGELOG.txt)。
 

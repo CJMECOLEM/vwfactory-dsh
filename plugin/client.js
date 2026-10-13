@@ -33,6 +33,23 @@ window.__ModuleLoader__.load({
 			autoSwitchHint: "当前账号返回 401/402/403/429 时，自动切到额度占用最低的其它账号重试。",
 			storeWarn: "vwFactory 数据文件提示（原文件均已保留，未删除）：",
 			routing: "分配方式",
+			upd: "插件版本",
+			updCurrent: "当前 v{v}",
+			updLatest: "已是最新版本",
+			updNewer: "有新版本 v{n}",
+			updBtn: "更新到 v{n}",
+			updBusy: "正在下载并校验…",
+			updCheck: "检查更新",
+			updChecking: "检查中…",
+			updPending: "已更新到 v{v}，完全退出并重新打开 DSH 后生效",
+			updDone: "更新完成，完全退出并重新打开 DSH 后生效",
+			updRollback: "回滚到 v{v}",
+			updRolledBack: "已回滚到 v{v}，重启 DSH 后生效",
+			updErr: "检查更新失败：{e}",
+			updManual: "这个版本需要重新运行安装程序：下载压缩包后双击 install.bat",
+			updPage: "下载页",
+			updNotes: "更新内容",
+			updChecked: "上次检查 {t}",
 			routingHint: "单账号：所有对话都用当前账号，出错或额度用满时才切换。均衡：每个对话固定在一个账号上（保留缓存），新对话分给剩余额度最多的账号，账号用到 90% 时把对话迁走。",
 			modeSingle: "单账号",
 			modeBalance: "均衡",
@@ -127,6 +144,23 @@ window.__ModuleLoader__.load({
 			autoSwitchHint: "On 401/402/403/429, switch to the account with the lowest quota usage and retry.",
 			storeWarn: "vwFactory data file notices (original files were kept):",
 			routing: "Routing",
+			upd: "Plugin version",
+			updCurrent: "Current v{v}",
+			updLatest: "Up to date",
+			updNewer: "v{n} available",
+			updBtn: "Update to v{n}",
+			updBusy: "Downloading and verifying…",
+			updCheck: "Check for updates",
+			updChecking: "Checking…",
+			updPending: "Updated to v{v}; fully quit and reopen DSH to apply",
+			updDone: "Updated; fully quit and reopen DSH to apply",
+			updRollback: "Roll back to v{v}",
+			updRolledBack: "Rolled back to v{v}; restart DSH to apply",
+			updErr: "Update check failed: {e}",
+			updManual: "This version needs the installer: download the zip and run install.bat",
+			updPage: "Download page",
+			updNotes: "What's new",
+			updChecked: "Checked {t}",
 			routingHint: "Single: every conversation uses the active account; switch only on errors or full quota. Balance: each conversation sticks to one account (keeps its cache); new conversations go to the account with the most quota left and move away at 90%.",
 			modeSingle: "Single",
 			modeBalance: "Balance",
@@ -513,6 +547,61 @@ window.__ModuleLoader__.load({
 		}
 
 		let autoRefreshed = false;
+		function UpdateCard({ t, notify }) {
+			const [u, setU] = useState(null);
+			const [busy, setBusy] = useState(null); // "check" | "install" | "rollback"
+			const [manual, setManual] = useState(false);
+			const alive = useRef(true);
+			useEffect(() => () => { alive.current = false; }, []);
+			const run = useCallback(async (kind) => {
+				setBusy(kind);
+				try {
+					if (kind === "install" || kind === "rollback") {
+						const r = await rpc("POST", `/api/update/${kind}`, {});
+						if (kind === "install") notify(r.upToDate ? t("updLatest") : t("updDone"));
+						else notify(fmt(t("updRolledBack"), { v: r.to }));
+					}
+					const s = await rpc(kind === "check" ? "POST" : "GET", kind === "check" ? "/api/update/check" : "/api/update", {});
+					if (alive.current) setU(s);
+				} catch (e) {
+					if (/needs a full reinstall/.test(e.message)) setManual(true);
+					notify(e.message, true);
+				} finally {
+					if (alive.current) setBusy(null);
+				}
+			}, [notify, t]);
+			useEffect(() => {
+				rpc("GET", "/api/update").then((s) => alive.current && setU(s)).catch(() => {});
+			}, []);
+			if (!u || u.supported === false) return null;
+			let line;
+			if (u.pendingRestart) line = h("span", { style: { color: V.accent } }, fmt(t("updPending"), { v: u.installed }));
+			else if (u.newer) line = h("span", { style: { color: V.accent } }, fmt(t("updNewer"), { n: u.latest }));
+			else if (u.checkError) line = h("span", { style: { color: V.fg3 } }, fmt(t("updErr"), { e: u.checkError }));
+			else if (u.latest) line = h("span", null, t("updLatest"));
+			const btn = (kind, label, primary) => h("button", { type: "button", className: "vwf-btn sm" + (primary ? " primary" : ""), disabled: !!busy, onClick: () => run(kind) }, label);
+			return h("div", { className: "vwf-card", style: { gap: 6 } },
+				h("div", { style: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" } },
+					h("div", { style: { flex: 1, minWidth: 180 } },
+						h("div", { style: { fontSize: 14, fontWeight: 500 } }, t("upd"), h("span", { style: { fontWeight: 400, color: V.fg3, marginLeft: 8, fontSize: 12 } }, fmt(t("updCurrent"), { v: u.running }))),
+						h("div", { style: { fontSize: 12, marginTop: 2, color: V.fg2 } }, line, u.checkedAt ? h("span", { style: { color: V.fg3 } }, " · " + fmt(t("updChecked"), { t: timeStr(u.checkedAt) })) : null)
+					),
+					h("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } },
+						u.newer && !u.pendingRestart && !manual ? btn("install", busy === "install" ? t("updBusy") : fmt(t("updBtn"), { n: u.latest }), true) : null,
+						u.canRollback && u.rollbackTo ? btn("rollback", fmt(t("updRollback"), { v: u.rollbackTo })) : null,
+						btn("check", busy === "check" ? t("updChecking") : t("updCheck")),
+						h("a", { href: u.page, target: "_blank", rel: "noopener", className: "vwf-btn sm", style: { textDecoration: "none", color: V.fg } }, t("updPage"))
+					)
+				),
+				manual ? h("div", { style: { fontSize: 12, color: V.warn } }, t("updManual")) : null,
+				u.newer && u.notes
+					? h("details", { style: { fontSize: 12, color: V.fg2 } },
+						h("summary", { style: { cursor: "pointer", color: V.fg3 } }, t("updNotes")),
+						h("div", { style: { whiteSpace: "pre-wrap", marginTop: 6, maxHeight: 220, overflow: "auto" } }, u.notes))
+					: null
+			);
+		}
+
 		function Section({ t }) {
 			ensureCss();
 			const [state, setState] = useState(null);
@@ -653,6 +742,7 @@ window.__ModuleLoader__.load({
 							),
 							h(ModeSeg, { t, mode: state.routing, onChange: setMode })
 						),
+						h(UpdateCard, { t, notify }),
 						adding ? h(AddPanel, { t, notify, onDone: (close) => { if (close) setAdding(false); void load(); } }) : null,
 						h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 12, color: V.fg3 } },
 							h("span", null, sub),
