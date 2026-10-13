@@ -327,6 +327,8 @@ window.__ModuleLoader__.load({
 .vwf-chev:hover{background:${V.hover}}
 .vwf-chev:focus-visible{outline:2px solid ${V.accent}}
 .vwf-badge{font-size:11px;padding:0 7px;border-radius:9px;line-height:18px;flex:none}
+.vwf-dot{flex:none;width:7px;height:7px;border-radius:50%;background:${V.ok};
+  box-shadow:0 0 0 3px color-mix(in srgb, ${V.ok} 18%, transparent)}
 .vwf-more{position:relative;flex:none}
 .vwf-btn.icon{padding:2px 8px;font-size:14px;line-height:18px;letter-spacing:1px}
 .vwf-btn.icon-lg{padding:0;width:30px;height:30px;display:inline-grid;place-items:center}
@@ -548,7 +550,7 @@ window.__ModuleLoader__.load({
 					}, h("svg", { width: 10, height: 10, viewBox: "0 0 10 10", "aria-hidden": true },
 						h("path", { d: "M3.5 1.5 7 5 3.5 8.5", fill: "none", stroke: "currentColor", strokeWidth: 1.6, strokeLinecap: "round", strokeLinejoin: "round" }))),
 					h("span", { className: "vwf-acc-name", title: meta ? `${name}\n${meta}` : name }, name),
-					current ? h("span", { className: "vwf-badge", style: { color: "#fff", background: V.ok } }, t("active")) : null,
+					current ? h("span", { className: "vwf-dot", title: t("active"), role: "img", "aria-label": t("active") }) : null,
 					balance && acc.sessions > 0 ? h("span", { className: "vwf-badge", style: { color: V.accent, border: `.5px solid ${V.accent}` } }, fmt(t("sessionsN"), { n: acc.sessions })) : null,
 					h(AccStatus, { t, acc, hideSessions: true }),
 					h("span", { style: { flex: 1 } }),
