@@ -3,6 +3,7 @@ import * as crypto from "node:crypto";
 import * as http2 from "node:http";
 import * as os3 from "node:os";
 import * as path4 from "node:path";
+import { StringDecoder } from "node:string_decoder";
 
 // src/proxy.ts
 import * as http from "http";
@@ -247,7 +248,8 @@ function defaultEfforts(id) {
   const fam = familyOf(id);
   if (fam === "unsupported") return void 0;
   if (id.startsWith("grok-")) return ["low", "medium", "high", "xhigh"];
-  if (id.startsWith("gemini-")) return ["off", "low", "medium", "high"];
+  // Gemini 3 cannot disable thinking ("off" would silently mean default/high).
+  if (id.startsWith("gemini-")) return ["low", "medium", "high"];
   if (fam === "openai-completions") return ["off", "high"];
   return ["off", "low", "medium", "high", "xhigh", "max"];
 }
@@ -399,6 +401,105 @@ function ensureOpenAISystem(messages) {
   const content = texts.length > 0 ? `${DROID_PREAMBLE}${SEP}${texts.join(SEP)}` : DROID_PREAMBLE;
   return [{ role: "system", content }, ...rest];
 }
+// Gemini thought signatures (OpenAI-compatible route). Gemini returns a
+// signature on its tool calls (tool_calls[].extra_content.google.thought_signature)
+// and rejects the next turn with 400 if a replayed call lacks it. DSH's chat
+// client does not round-trip extra_content, so the proxy remembers signatures
+// from responses (keyed by tool-call id) and puts them back on replay, falling
+// back to Google's documented skip value when unknown (e.g. after a restart).
+var GEMINI_SIG_SKIP = "skip_thought_signature_validator";
+var GEMINI_SIG_MAX = 4096;
+var geminiSigs = /* @__PURE__ */ new Map();
+function rememberGeminiSig(id, sig) {
+  if (typeof id !== "string" || !id || typeof sig !== "string" || !sig || sig === GEMINI_SIG_SKIP) return;
+  geminiSigs.delete(id);
+  geminiSigs.set(id, sig);
+  if (geminiSigs.size > GEMINI_SIG_MAX) geminiSigs.delete(geminiSigs.keys().next().value);
+}
+function sigOf(tc) {
+  const g = isRecord(tc) && isRecord(tc.extra_content) && isRecord(tc.extra_content.google) ? tc.extra_content.google : void 0;
+  return typeof g?.thought_signature === "string" && g.thought_signature ? g.thought_signature : void 0;
+}
+/** Fill in missing signatures on replayed assistant tool calls. Returns how many were real / fallback. */
+function ensureGeminiThoughtSignatures(messages) {
+  const n = { restored: 0, fallback: 0 };
+  if (!Array.isArray(messages)) return n;
+  for (const m of messages) {
+    if (!isRecord(m) || m.role !== "assistant" || !Array.isArray(m.tool_calls)) continue;
+    for (const tc of m.tool_calls) {
+      if (!isRecord(tc) || sigOf(tc)) continue;
+      const known = typeof tc.id === "string" ? geminiSigs.get(tc.id) : void 0;
+      const extra = isRecord(tc.extra_content) ? tc.extra_content : {};
+      tc.extra_content = { ...extra, google: { ...isRecord(extra.google) ? extra.google : {}, thought_signature: known ?? GEMINI_SIG_SKIP } };
+      if (known) n.restored++;
+      else n.fallback++;
+    }
+  }
+  return n;
+}
+/**
+ * Passive tap on a Gemini chat response (SSE or JSON) that records tool-call
+ * signatures. Never alters the bytes; parsing failures are ignored.
+ */
+var GeminiSigTap = class {
+  constructor(sse) {
+    this.sse = sse;
+    this.decoder = new StringDecoder("utf8");
+    this.buf = "";
+    this.size = 0;
+    this.ids = /* @__PURE__ */ new Map();
+  }
+  data(chunk) {
+    const text = this.decoder.write(chunk);
+    if (!this.sse) {
+      this.size += text.length;
+      if (this.size <= 16 * 1048576) this.buf += text;
+      return;
+    }
+    this.buf += text;
+    let nl;
+    while ((nl = this.buf.indexOf("\n")) >= 0) {
+      const line = this.buf.slice(0, nl).replace(/\r$/, "");
+      this.buf = this.buf.slice(nl + 1);
+      if (line.startsWith("data:") && line.includes("tool_calls")) this.chunk(line.slice(5).trim());
+    }
+  }
+  end() {
+    const rest = this.buf + this.decoder.end();
+    this.buf = "";
+    if (this.sse) {
+      if (rest.startsWith("data:")) this.chunk(rest.slice(5).trim());
+      return;
+    }
+    if (this.size > 16 * 1048576 || !rest.includes("tool_calls")) return;
+    try {
+      const j = JSON.parse(rest);
+      for (const c of Array.isArray(j?.choices) ? j.choices : []) {
+        for (const tc of Array.isArray(c?.message?.tool_calls) ? c.message.tool_calls : []) rememberGeminiSig(tc?.id, sigOf(tc));
+      }
+    } catch {
+    }
+  }
+  chunk(data) {
+    let j;
+    try {
+      j = JSON.parse(data);
+    } catch {
+      return;
+    }
+    for (const c of Array.isArray(j?.choices) ? j.choices : []) {
+      const calls = c?.delta?.tool_calls;
+      if (!Array.isArray(calls)) continue;
+      for (const tc of calls) {
+        // streamed calls carry the id once; later fragments only carry the index
+        const key = `${c.index ?? 0}:${tc?.index ?? 0}`;
+        if (typeof tc?.id === "string" && tc.id) this.ids.set(key, tc.id);
+        const sig = sigOf(tc);
+        if (sig) rememberGeminiSig(this.ids.get(key), sig);
+      }
+    }
+  }
+};
 function ensureResponsesBody(body) {
   const texts = [];
   if (typeof body.instructions === "string" && body.instructions.length > 0) {
@@ -1909,6 +2010,7 @@ var FactoryProxy = class {
     if (kind === "anthropic") ensureAnthropicSystem(body);
     else if (kind === "chat") {
       if (Array.isArray(body.messages)) body.messages = ensureOpenAISystem(body.messages);
+      if (upstreamProviderFor(model) === "google") ensureGeminiThoughtSignatures(body.messages);
     } else ensureResponsesBody(body);
     const conv = conversationKey(kind, body);
     const sessionId = conv ? uuidFromHash(sha256Hex(`${id.meta?.id ?? ""}\0${conv}`)) : crypto.randomUUID();
@@ -2362,17 +2464,26 @@ ${this.mcpAccounts()}`;
       res.end();
       return;
     }
-    await this.pipeThrough(Readable.fromWeb(upstreamRes.body), res, ct.includes("text/event-stream") ? kind : void 0, abort.signal);
+    const isSse = ct.includes("text/event-stream");
+    const tap = kind === "chat" && upstreamRes.ok && upstreamProviderFor(model) === "google" ? new GeminiSigTap(isSse) : void 0;
+    await this.pipeThrough(Readable.fromWeb(upstreamRes.body), res, isSse ? kind : void 0, abort.signal, tap);
   }
   /**
    * Copy an upstream body to the client. If upstream dies mid-stream, an SSE
    * response gets a protocol-native error event before it ends, so the client
    * shows an error instead of waiting forever on a half-open stream.
    */
-  pipeThrough(stream, res, sseKind, signal) {
+  pipeThrough(stream, res, sseKind, signal, tap) {
     return new Promise((resolve) => {
       let tail = "";
+      const tapSafe = (fn) => {
+        try {
+          fn();
+        } catch {
+        }
+      };
       stream.on("data", (chunk) => {
+        if (tap) tapSafe(() => tap.data(chunk));
         if (sseKind) tail = (tail + chunk.toString("latin1")).slice(-2);
         if (!res.write(chunk)) {
           stream.pause();
@@ -2380,6 +2491,7 @@ ${this.mcpAccounts()}`;
         }
       });
       stream.on("end", () => {
+        if (tap) tapSafe(() => tap.end());
         res.end();
         resolve();
       });

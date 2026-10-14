@@ -27,9 +27,32 @@ let scenario = "ok";
 const hits = { kA: 0, kB: 0 };
 let lastUpstreamClosed = null;
 const sse = (o) => `event: ${o.type}\ndata: ${JSON.stringify(o)}\n\n`;
+// chat / responses requests seen by the mock (Gemini / Grok tests)
+const seen = [];
 const upstream = http.createServer(async (req, res) => {
-  for await (const _ of req);
+  const parts = [];
+  for await (const c of req) parts.push(c);
   const key = (req.headers.authorization ?? "").replace("Bearer ", "");
+  if (req.url.includes("/chat/completions") || req.url.includes("/responses")) {
+    const body = JSON.parse(Buffer.concat(parts).toString("utf8") || "{}");
+    seen.push({ url: req.url, headers: req.headers, body });
+    if (req.url.includes("/responses")) { res.writeHead(200, { "Content-Type": "application/json" }).end('{"output":[]}'); return; }
+    // Gemini-style tool call carrying a thought signature
+    const sig = body.stream ? "SIG-STREAM" : "SIG-JSON";
+    const callId = body.stream ? "call_s1" : "call_j1";
+    if (body.stream) {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      const c1 = { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: callId, type: "function", function: { name: "get_time", arguments: "" }, extra_content: { google: { thought_signature: sig } } }] } }] };
+      const c2 = { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: '{"tz":"Asia/Tokyo"}' } }] }, finish_reason: "tool_calls" }] };
+      // split mid-line to exercise buffering
+      const text = `data: ${JSON.stringify(c1)}\n\ndata: ${JSON.stringify(c2)}\n\ndata: [DONE]\n\n`;
+      const cut = Math.floor(text.length / 3);
+      res.write(text.slice(0, cut)); setTimeout(() => res.end(text.slice(cut)), 5);
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ choices: [{ index: 0, message: { role: "assistant", content: null, tool_calls: [{ id: callId, type: "function", function: { name: "get_time", arguments: "{}" }, extra_content: { google: { thought_signature: sig } } }] }, finish_reason: "tool_calls" }] }));
+    return;
+  }
   if (!req.url.includes("/v1/messages")) { res.writeHead(404).end("{}"); return; }
   hits[key] = (hits[key] ?? 0) + 1;
   const n = hits[key];
@@ -152,6 +175,39 @@ reset("ok");
 {
   const r = await post("/v1/messages", JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 5, messages: [{ role: "user", content: "x" }] }));
   ok("9 normal request 200", r.status === 200 && (await r.text()).includes("message_start"));
+}
+// 11. Gemini / Grok routing + Gemini thought-signature round trip
+reset("ok");
+{
+  const tools = [{ type: "function", function: { name: "get_time", parameters: { type: "object", properties: {} } } }];
+  const user = { role: "user", content: "time?" };
+  // DSH replays tool calls WITHOUT extra_content
+  const replay = (id) => [user, { role: "assistant", content: null, tool_calls: [{ id, type: "function", function: { name: "get_time", arguments: "{}" } }] }, { role: "tool", tool_call_id: id, content: "12:34" }];
+  const lastChat = () => seen.filter((s) => s.url.includes("/chat/completions")).at(-1);
+  const sigSent = () => lastChat()?.body.messages.find((m) => m.role === "assistant")?.tool_calls?.[0]?.extra_content?.google?.thought_signature;
+
+  seen.length = 0;
+  let r = await post("/v1/chat/completions", JSON.stringify({ model: "gemini-3.8-flash", stream: true, tools, messages: [user] }));
+  const streamed = await r.text();
+  ok("11 gemini -> chat route, x-api-provider google", lastChat()?.headers["x-api-provider"] === "google", lastChat()?.headers["x-api-provider"]);
+  ok("11 gemini stream passed through unchanged", streamed.includes("SIG-STREAM") && streamed.includes("[DONE]"));
+  await post("/v1/chat/completions", JSON.stringify({ model: "gemini-3.8-flash", tools, messages: replay("call_s1") })).then((x) => x.text());
+  ok("11 streamed signature restored on replay", sigSent() === "SIG-STREAM", String(sigSent()));
+
+  r = await post("/v1/chat/completions", JSON.stringify({ model: "gemini-3.8-flash", tools, messages: [user] }));
+  await r.text();
+  await post("/v1/chat/completions", JSON.stringify({ model: "gemini-3.8-flash", tools, messages: replay("call_j1") })).then((x) => x.text());
+  ok("11 non-stream signature restored on replay", sigSent() === "SIG-JSON", String(sigSent()));
+
+  await post("/v1/chat/completions", JSON.stringify({ model: "gemini-3.8-flash", tools, messages: replay("call_unknown") })).then((x) => x.text());
+  ok("11 unknown call gets skip fallback", sigSent() === "skip_thought_signature_validator", String(sigSent()));
+
+  await post("/v1/chat/completions", JSON.stringify({ model: "glm-5.3", tools, messages: replay("call_unknown") })).then((x) => x.text());
+  ok("11 non-Gemini chat untouched", sigSent() === undefined && lastChat()?.headers["x-api-provider"] === "fireworks", `${sigSent()} ${lastChat()?.headers["x-api-provider"]}`);
+
+  await post("/v1/responses", JSON.stringify({ model: "grok-4.7", input: "hi" })).then((x) => x.text());
+  const g = seen.filter((s) => s.url.includes("/responses")).at(-1);
+  ok("11 grok -> responses route, xai, no OpenAI-Platform", g?.headers["x-api-provider"] === "xai" && !g?.headers["openai-platform"], `${g?.headers["x-api-provider"]} platform=${g?.headers["openai-platform"]}`);
 }
 await proxy.stop();
 upstream.close();
