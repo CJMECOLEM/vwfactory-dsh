@@ -1,6 +1,11 @@
 ﻿vwFactory 更新日志
 ==================
 
+v0.4.10 (测试版)
+  - Gumloop 省积分: Claude 的上下文缓存有效期从 5 分钟延长到 1 小时。以前离开超过 5 分钟再回来，
+    长对话要把整段上下文重新写入缓存 (15 万 token 约 150 积分)；现在 1 小时内回来仍然命中缓存。
+    实测 Gumloop 对 1 小时缓存按普通缓存写入价计费，不额外收费
+
 v0.4.9 (测试版)
   - 新增: Gumloop 账号接入。设置 → Factory 账号 → Gumloop → 添加，填 Gumloop 的 API Key 和 User ID
     (Gumloop 网页 → 设置 → Connectors → Gumloop API Key 页面)。添加后重启 DSH，模型选择里出现「Gumloop」分组
