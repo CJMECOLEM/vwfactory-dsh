@@ -1942,7 +1942,7 @@ var FactoryProxy = class {
     if (!state || typeof this.store.saveState !== "function") return 0;
     if (!isRecord(state.visionProbe)) state.visionProbe = {};
     Object.assign(VISION_PROBED, state.visionProbe);
-    const todo = entries.filter((e) => providerKey(e.family) === "factory" && needsVisionProbe(e.id)).slice(0, limit);
+    const todo = entries.filter((e) => providerKey(e.family, e.id) === "factory" && needsVisionProbe(e.id)).slice(0, limit);
     if (!todo.length || !this.store.activeIdentity?.()) return 0;
     const token = await this.store.proxyToken();
     let found = 0;
@@ -3540,6 +3540,16 @@ var PROVIDER_HEADS = {
     "        defaultInput: [text, image]",
     "        models:"
   ],
+  // Grok shares the Responses route with GPT but gets its own menu group.
+  "factory-grok": [
+    "      factory-grok:",
+    "        displayName: Factory (Grok)",
+    "        apiKeyEnv: VWFACTORY_TOKEN",
+    "        api: openai-responses",
+    "        baseURL: http://127.0.0.1:4199/v1",
+    "        defaultInput: [text, image]",
+    "        models:"
+  ],
   factory: [
     "      factory:",
     "        displayName: Factory",
@@ -3641,8 +3651,9 @@ async function probeVisionModel(port, token, model) {
   if (!answer.trim()) return void 0;
   return /red|orange|scarlet|crimson|红|橙/i.test(answer);
 }
-function providerKey(family) {
+function providerKey(family, id = "") {
   if (family === "anthropic") return "factory-claude";
+  if (id.startsWith("grok-")) return "factory-grok";
   if (family === "openai-responses") return "factory-gpt";
   return "factory";
 }
@@ -3681,9 +3692,10 @@ function syncPatchModels(patchPath, entries, glEntries = []) {
   const groups = {
     "factory-claude": [],
     "factory-gpt": [],
+    "factory-grok": [],
     factory: []
   };
-  for (const e of entries) groups[providerKey(e.family)].push(e);
+  for (const e of entries) groups[providerKey(e.family, e.id)].push(e);
   const block = ["    providers:"];
   for (const key of Object.keys(PROVIDER_HEADS)) {
     block.push(...PROVIDER_HEADS[key]);
