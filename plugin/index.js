@@ -1486,6 +1486,7 @@ var FactoryProxy = class {
     this.store = store;
     this.cfg = cfg;
     this.hooks = hooks;
+    this.gumloop = new GumloopRelay(this);
   }
   server;
   emitter = new Emitter();
@@ -1519,6 +1520,11 @@ var FactoryProxy = class {
       }), 5 * 6e4);
       this.quotaTimer.unref?.();
     }
+    if (!this.gumloopTimer) {
+      this.gumloopTimer = setInterval(() => void this.gumloop.tick().catch(() => {
+      }), 30 * 6e4);
+      this.gumloopTimer.unref?.();
+    }
   }
   async stop() {
     if (this.versionTimer) {
@@ -1528,6 +1534,10 @@ var FactoryProxy = class {
     if (this.quotaTimer) {
       clearInterval(this.quotaTimer);
       this.quotaTimer = void 0;
+    }
+    if (this.gumloopTimer) {
+      clearInterval(this.gumloopTimer);
+      this.gumloopTimer = void 0;
     }
     if (!this.server) return;
     const s = this.server;
@@ -2615,6 +2625,49 @@ ${this.mcpAccounts()}`;
       });
     });
   }
+  /** Settings-page API for Gumloop accounts: /api/gumloop/<action>. */
+  async handleGumloopApi(action, req, res) {
+    const gl = this.gumloop;
+    const body = req.method === "POST" ? await this.readBody(req) : {};
+    const id = typeof body.id === "string" ? body.id : "";
+    const syncModels = async () => {
+      try {
+        return await this.hooks.syncModels?.() ?? false;
+      } catch {
+        return false;
+      }
+    };
+    try {
+      if (action === "state" && req.method === "GET") {
+        this.sendJson(res, 200, gl.publicState());
+      } else if (action === "add" && req.method === "POST") {
+        const first = gl.accounts().length === 0;
+        const meta = await gl.add(body);
+        const changed = await syncModels();
+        this.sendJson(res, 200, { message: `added ${meta.label}`, id: meta.id, modelsChanged: changed, first });
+      } else if (action === "remove" && req.method === "POST") {
+        await gl.remove(id);
+        this.sendJson(res, 200, { message: "removed", modelsChanged: await syncModels() });
+      } else if (action === "switch" && req.method === "POST") {
+        gl.setActive(id);
+        this.sendJson(res, 200, { message: "switched" });
+      } else if (action === "calibrate" && req.method === "POST") {
+        gl.calibrate(id, body.balance, body.allowance);
+        this.sendJson(res, 200, { message: "calibrated", state: gl.publicState() });
+      } else if (action === "refresh" && req.method === "POST") {
+        await gl.refreshModels(true);
+        let priceError;
+        await gl.refreshPrices(true).catch((e) => {
+          priceError = errorMessage(e);
+        });
+        this.sendJson(res, 200, { message: "refreshed", models: gl.models().length, priceError, modelsChanged: await syncModels() });
+      } else {
+        this.sendJson(res, 404, { error: `unknown Gumloop action ${action}` });
+      }
+    } catch (e) {
+      this.sendJson(res, 400, { error: errorMessage(e) });
+    }
+  }
   async handle(req, res) {
     const url = new URL(req.url ?? "/", "http://localhost");
     const path5 = url.pathname;
@@ -2665,6 +2718,7 @@ ${this.mcpAccounts()}`;
         secretsEncrypted: this.store.secretsMode === "dpapi",
         alertSeq: this.store.alertSeq?.() ?? 0,
         alerts: alerts.slice(-10),
+        gumloop: this.gumloop.publicState(),
         identities: this.store.identities().map((i) => ({
           sessions: this.sessionsOf(i.id),
           inflight: this.inflight.get(i.id) ?? 0,
@@ -2679,6 +2733,10 @@ ${this.mcpAccounts()}`;
           cooldown: this.cooldownOf(i.id)
         }))
       });
+      return;
+    }
+    if (path5.startsWith("/api/gumloop/")) {
+      await this.handleGumloopApi(path5.slice("/api/gumloop/".length), req, res);
       return;
     }
     if (path5 === "/api/add" && req.method === "POST") {
@@ -2837,6 +2895,10 @@ ${this.mcpAccounts()}`;
       await this.relay("chat", req, res, rawBody);
     } else if (path5 === "/v1/responses") {
       await this.relay("responses", req, res, rawBody);
+    } else if (path5 === "/gumloop/v1/chat/completions") {
+      await this.gumloop.relay(req, res, rawBody);
+    } else if (path5 === "/gumloop/v1/models" && req.method === "GET") {
+      this.sendJson(res, 200, { object: "list", data: this.gumloop.models().map((m) => ({ id: m.alias || m.id, object: "model", owned_by: "gumloop" })) });
     } else if (path5 === "/mcp") {
       await this.handleMcp(res, rawBody);
     } else {
@@ -2845,6 +2907,593 @@ ${this.mcpAccounts()}`;
   }
   dispose() {
     void this.stop();
+  }
+};
+
+// src/gumloop.ts
+// Gumloop accounts: a separate account pool (never mixed into Factory routing)
+// served on /gumloop/v1/chat/completions through Gumloop's official
+// OpenAI-compatible endpoint. Gumloop exposes no balance API for non-enterprise
+// plans, so every call is priced locally from its token usage and subtracted
+// from a balance the user calibrates from the Gumloop web page.
+var GUMLOOP_WS = process.env.VWFACTORY_GUMLOOP_WS || "https://ws.gumloop.com/api/v1";
+var GUMLOOP_API = process.env.VWFACTORY_GUMLOOP_API || "https://api.gumloop.com/api/v1";
+var OPENROUTER_API = process.env.VWFACTORY_OPENROUTER_API || "https://openrouter.ai/api/v1";
+var GUMLOOP_USD_PER_CREDIT = 5e-3;
+var GUMLOOP_DEFAULT_ALLOWANCE = 2e4;
+var GUMLOOP_PRICE_TTL_MS = 12 * 36e5;
+var GUMLOOP_MODELS_TTL_MS = 6 * 36e5;
+var GUMLOOP_RECENT_MAX = 40;
+// USD per million tokens [input, output, cacheRead, cacheWrite], used until
+// (or when) live prices cannot be fetched. cacheWrite null = billed as input.
+var GUMLOOP_FALLBACK_PRICES = {
+  "claude-fable-5-1": [10, 50, 0.25, 12.5],
+  "claude-opus-5-5": [4, 20, 0.2, 5],
+  "claude-sonnet-5-5": [2, 10, 0.1, 2.5],
+  "claude-haiku-5-5": [0.1, 0.5, 0.01, 0.125],
+  "gpt-6-astra": [10, 50, 1, 12.5],
+  "gpt-6.1-sol": [2, 10, 0.1, 2.5],
+  "gpt-6-sol": [2, 10, 0.2, 2.5],
+  "gpt-6-luna": [0.1, 0.5, 0.01, 0.125],
+  "grok-4.7": [2, 6, 0.5, null],
+  "grok-4.6": [2, 6, 0.5, null],
+  "meta/muse-spark-1.3": [1.25, 4.25, 0.15, null],
+  "accounts/fireworks/models/glm-5p3": [1.4, 4.4, 0.26, null],
+  "z-ai/glm-5.3-flash": [0.15, 0.5, 0.03, null],
+  "accounts/fireworks/routers/kimi-k3-us": [3, 15, 0.3, null],
+  "accounts/fireworks/models/kimi-k2p7-code": [0.95, 4, 0.19, null],
+  "gemini-4-argon": [2, 10, 0.1, 0.1875],
+  "gemini-3.1-pro-preview": [2, 12, 0.2, 0.375],
+  "gemini-3.8-flash": [0.75, 3.75, 0.075, 0.0417],
+  "google/gemma-4-26b-a4b-it": [0.09, 0.3, 0.05, null],
+  "accounts/fireworks/models/deepseek-v4p1-flash": [0.3, 1.2, 6e-3, null],
+  "accounts/fireworks/models/deepseek-v4-pro-0813": [1.32, 3.96, 0.044, null],
+  "accounts/fireworks/models/minimax-m3": [0.3, 1.2, 0.06, null]
+};
+var GUMLOOP_VENDORS = [
+  [/^claude-/, "anthropic", "Anthropic"],
+  [/^(gpt-|o\d)/, "openai", "OpenAI"],
+  [/^(gemini-|gemma-)/, "google", "Google"],
+  [/^grok-/, "x-ai", "xAI"],
+  [/^deepseek/, "deepseek", "DeepSeek"],
+  [/^glm-/, "z-ai", "Z.AI"],
+  [/^kimi-/, "moonshotai", "Moonshot AI"],
+  [/^minimax-/, "minimax", "Minimax"],
+  [/^qwen/, "qwen", "Alibaba"]
+];
+/** Gumloop model id -> { orId, fireworks, vendorName } for price lookup. */
+function gumloopPriceRef(id) {
+  const fireworks = /^accounts\/fireworks\//.test(id);
+  let bare = id.replace(/^accounts\/fireworks\/(models|routers)\//, "");
+  if (bare.includes("/")) return { orIds: [...new Set([bare, bare.replace(/-\d+(\.\d+)*$/, "")])], fireworks: false };
+  bare = bare.replace(/(\d)p(\d)/g, "$1.$2").replace(/-us$/, "");
+  const dotted = bare.replace(/(\d)-(\d)/g, "$1.$2");
+  const v = GUMLOOP_VENDORS.find(([re]) => re.test(bare));
+  const orIds = v ? [`${v[1]}/${dotted}`, `${v[1]}/${bare}`] : [dotted, bare];
+  return { orIds: [...new Set(orIds)], fireworks, vendorName: v?.[2] };
+}
+function perMillion(p) {
+  const n = (x) => x === void 0 || x === null || x === "" ? null : Number((Number(x) * 1e6).toPrecision(10));
+  const out = [n(p.prompt), n(p.completion), n(p.input_cache_read), n(p.input_cache_write)];
+  return out[0] === null || out[1] === null || !Number.isFinite(out[0]) ? void 0 : out;
+}
+function orPriceEntry(pricing) {
+  const base = perMillion(pricing);
+  if (!base) return void 0;
+  const entry = { p: base };
+  const ov = Array.isArray(pricing.overrides) ? pricing.overrides.find((o) => Number(o.min_prompt_tokens) > 0) : void 0;
+  const ovp = ov ? perMillion({ ...pricing, ...ov }) : void 0;
+  if (ovp) {
+    entry.longAt = Number(ov.min_prompt_tokens);
+    entry.long = ovp;
+  }
+  return entry;
+}
+/** USD cost of one completion from its OpenAI-style usage block. */
+function gumloopUsageCost(entry, usage) {
+  const prompt = Number(usage?.prompt_tokens) || 0;
+  const out = Number(usage?.completion_tokens) || 0;
+  const det = isRecord(usage?.prompt_tokens_details) ? usage.prompt_tokens_details : {};
+  const read = Number(det.cached_tokens) || 0;
+  const write = Number(det.cache_write_tokens ?? det.cache_creation_tokens) || 0;
+  const fresh = Math.max(0, prompt - read - write);
+  const p = entry.long && prompt >= entry.longAt ? entry.long : entry.p;
+  const [pin, pout, pread, pwrite] = p;
+  const usd = (fresh * pin + read * (pread ?? pin) + write * (pwrite ?? pin) + out * pout) / 1e6;
+  return { usd, prompt, out, read, write };
+}
+function creditsForUsd(usd) {
+  return usd > 0 ? Math.ceil(usd / GUMLOOP_USD_PER_CREDIT - 1e-9) : 0;
+}
+function monthKey(t = Date.now()) {
+  const d = new Date(t);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+/** Watches a chat-completions response (SSE or JSON) for its usage block. */
+var GumloopUsageTap = class {
+  constructor(isSse, done) {
+    this.isSse = isSse;
+    this.done = done;
+    this.dec = new StringDecoder("utf8");
+    this.buf = "";
+    this.usage = void 0;
+    this.model = void 0;
+  }
+  take(obj) {
+    if (isRecord(obj?.usage)) this.usage = obj.usage;
+    if (typeof obj?.model === "string") this.model = obj.model;
+  }
+  line(l) {
+    const t = l.trim();
+    if (!t.startsWith("data:")) return;
+    const d = t.slice(5).trim();
+    if (!d || d === "[DONE]" || !d.includes('"usage"') && this.model) return;
+    try {
+      this.take(JSON.parse(d));
+    } catch {
+    }
+  }
+  data(chunk) {
+    this.buf += this.dec.write(chunk);
+    if (!this.isSse) {
+      if (this.buf.length > 8e6) this.buf = "";
+      return;
+    }
+    let i;
+    while ((i = this.buf.indexOf("\n")) >= 0) {
+      this.line(this.buf.slice(0, i));
+      this.buf = this.buf.slice(i + 1);
+    }
+  }
+  end() {
+    this.buf += this.dec.end();
+    if (this.isSse) {
+      if (this.buf) this.line(this.buf);
+    } else {
+      try {
+        this.take(JSON.parse(this.buf));
+      } catch {
+      }
+    }
+    this.buf = "";
+    this.done(this.usage);
+  }
+};
+var GumloopRelay = class {
+  constructor(proxy) {
+    this.proxy = proxy;
+    this.store = proxy.store;
+    this.cooldowns = /* @__PURE__ */ new Map();
+    this.pricesInflight = void 0;
+    this.modelsInflight = void 0;
+  }
+  // ---- persisted state ----
+  get st() {
+    const s = this.store.state;
+    if (!isRecord(s.gumloop)) s.gumloop = {};
+    const g = s.gumloop;
+    if (!Array.isArray(g.accounts)) g.accounts = [];
+    if (!isRecord(g.ledger)) g.ledger = {};
+    return g;
+  }
+  save() {
+    this.store.saveState();
+  }
+  accounts() {
+    return this.st.accounts;
+  }
+  activeAccount() {
+    const g = this.st;
+    return g.accounts.find((a) => a.id === g.activeId) ?? g.accounts[0];
+  }
+  ledgerOf(id) {
+    const g = this.st;
+    const l = isRecord(g.ledger[id]) ? g.ledger[id] : g.ledger[id] = {};
+    if (!Array.isArray(l.recent)) l.recent = [];
+    if (typeof l.spent !== "number") l.spent = 0;
+    if (!isRecord(l.month) || l.month.key !== monthKey()) l.month = { key: monthKey(), credits: 0, calls: 0, usd: 0 };
+    return l;
+  }
+  async credential(id) {
+    const s = await this.store.secret(id);
+    return s.glKey && s.glUser ? { key: s.glKey, user: s.glUser } : void 0;
+  }
+  headers(cred) {
+    return { Authorization: `Bearer ${cred.key}`, "x-auth-key": cred.user };
+  }
+  // ---- account management ----
+  async add(body) {
+    const key = typeof body.apiKey === "string" ? body.apiKey.trim() : "";
+    const user = typeof body.userId === "string" ? body.userId.trim() : "";
+    if (!/^[A-Za-z0-9_\-]{16,128}$/.test(key)) throw new Error("API Key format looks wrong");
+    if (!/^[A-Za-z0-9_\-]{8,128}$/.test(user)) throw new Error("User ID format looks wrong");
+    const cred = { key, user };
+    const models = await this.fetchModels(cred);
+    const id = `gl-${sha256Hex(user).slice(0, 10)}`;
+    const g = this.st;
+    const prev = g.accounts.find((a) => a.id === id);
+    const label = typeof body.label === "string" && body.label.trim() ? body.label.trim().slice(0, 80) : prev?.label ?? `Gumloop ${user.slice(0, 4)}\u2026${user.slice(-4)}`;
+    const meta = { ...prev ?? {}, id, label, userTail: user.slice(-4), keyTail: key.slice(-4), createdAt: prev?.createdAt ?? Date.now() };
+    if (prev) Object.assign(prev, meta);
+    else g.accounts.push(meta);
+    if (!g.activeId) g.activeId = id;
+    await this.store.ready;
+    this.store.secrets[id] = { glKey: key, glUser: user };
+    this.saveModels(models);
+    this.save();
+    await this.store.saveSecrets();
+    void this.refreshPrices().catch(() => {
+    });
+    return meta;
+  }
+  async remove(id) {
+    const g = this.st;
+    g.accounts = g.accounts.filter((a) => a.id !== id);
+    delete g.ledger[id];
+    if (g.activeId === id) g.activeId = g.accounts[0]?.id;
+    await this.store.ready;
+    delete this.store.secrets[id];
+    this.save();
+    await this.store.saveSecrets();
+  }
+  setActive(id) {
+    const g = this.st;
+    if (!g.accounts.some((a) => a.id === id)) throw new Error("unknown Gumloop account");
+    g.activeId = id;
+    this.save();
+  }
+  /** Anchor the balance to the number shown on the Gumloop web page. */
+  calibrate(id, balance, allowance) {
+    const acct = this.st.accounts.find((a) => a.id === id);
+    if (!acct) throw new Error("unknown Gumloop account");
+    const b = Number(balance);
+    if (!Number.isFinite(b) || b < 0 || b > 1e8) throw new Error("balance must be a non-negative number");
+    const l = this.ledgerOf(id);
+    l.anchor = { balance: Math.round(b), at: Date.now() };
+    l.spent = 0;
+    delete l.exhaustedAt;
+    if (allowance !== void 0 && allowance !== null && allowance !== "") {
+      const a = Number(allowance);
+      if (!Number.isFinite(a) || a <= 0 || a > 1e8) throw new Error("allowance must be a positive number");
+      acct.allowance = Math.round(a);
+    }
+    this.save();
+  }
+  // ---- models ----
+  async fetchModels(cred) {
+    const r = await fetch(`${GUMLOOP_API}/models`, { headers: this.headers(cred), signal: AbortSignal.timeout(3e4) });
+    if (r.status === 401 || r.status === 403) throw new Error(`Gumloop rejected the API Key / User ID (HTTP ${r.status})`);
+    if (!r.ok) throw new Error(`Gumloop /models failed: HTTP ${r.status}`);
+    const j = await r.json();
+    const out = [];
+    for (const g of Array.isArray(j.model_groups) ? j.model_groups : []) {
+      for (const o of Array.isArray(g.options) ? g.options : []) {
+        if (!isRecord(o) || typeof o.value !== "string") continue;
+        const caps = Array.isArray(o.metadata?.capabilities) ? o.metadata.capabilities : [];
+        if (o.status !== "active" || o.restricted || o.is_classifier_model || o.is_image_generation || o.is_voice || o.is_transcription) continue;
+        if (!caps.includes("functions") || o.value === "gumloop-chew") continue;
+        out.push({
+          id: o.value,
+          name: typeof o.label === "string" && o.label ? o.label : o.value,
+          group: typeof g.groupLabel === "string" ? g.groupLabel : "",
+          vision: caps.includes("vision"),
+          reasoning: caps.includes("reasoning") || /^claude-(opus|fable)/.test(o.value),
+          // Prefer the "short" window: every call bills the whole context, so a
+          // 1M window lets one conversation burn thousands of credits per turn.
+          context: Number(o.metadata?.short_context_window) || Number(o.metadata?.context_window) || void 0
+        });
+      }
+    }
+    if (!out.length) throw new Error("Gumloop returned no usable chat models");
+    // DSH addresses models as provider + id: keep ids slash-free ("glm-5p3" for
+    // "accounts/fireworks/models/glm-5p3"); the relay maps them back.
+    const tails = /* @__PURE__ */ new Map();
+    for (const m of out) {
+      const tail = m.id.slice(m.id.lastIndexOf("/") + 1);
+      tails.set(tail, (tails.get(tail) ?? 0) + 1);
+    }
+    for (const m of out) {
+      const tail = m.id.slice(m.id.lastIndexOf("/") + 1);
+      m.alias = tails.get(tail) === 1 ? tail : m.id.replace(/\//g, "--");
+    }
+    return out;
+  }
+  /** DSH-side model id (alias or full Gumloop id) -> Gumloop model id. */
+  resolveModel(id) {
+    if (typeof id !== "string") return "";
+    const m = this.models().find((x) => x.alias === id || x.id === id);
+    return m ? m.id : id;
+  }
+  saveModels(list) {
+    this.st.models = { at: Date.now(), list };
+  }
+  models() {
+    return Array.isArray(this.st.models?.list) ? this.st.models.list : [];
+  }
+  async refreshModels(force = false) {
+    if (!force && Date.now() - (this.st.models?.at ?? 0) < GUMLOOP_MODELS_TTL_MS && this.models().length) return this.models();
+    if (this.modelsInflight) return this.modelsInflight;
+    this.modelsInflight = (async () => {
+      const acct = this.activeAccount();
+      const cred = acct && await this.credential(acct.id);
+      if (!cred) return this.models();
+      this.saveModels(await this.fetchModels(cred));
+      this.save();
+      return this.models();
+    })().finally(() => {
+      this.modelsInflight = void 0;
+    });
+    return this.modelsInflight;
+  }
+  /** Entries for the DSH provider block (empty = no Gumloop group). */
+  patchEntries() {
+    if (!this.accounts().length) return [];
+    return this.models();
+  }
+  // ---- prices ----
+  priceEntry(model) {
+    const live = this.st.prices?.table?.[model];
+    if (live?.p) return { ...live, source: "live" };
+    const fb = GUMLOOP_FALLBACK_PRICES[model];
+    return fb ? { p: fb, source: "builtin" } : void 0;
+  }
+  async refreshPrices(force = false) {
+    if (!force && Date.now() - (this.st.prices?.at ?? 0) < GUMLOOP_PRICE_TTL_MS) return;
+    if (this.pricesInflight) return this.pricesInflight;
+    this.pricesInflight = (async () => {
+      const ids = this.models().map((m) => m.id);
+      if (!ids.length) return;
+      const r = await fetch(`${OPENROUTER_API}/models`, { signal: AbortSignal.timeout(3e4) });
+      if (!r.ok) throw new Error(`price list HTTP ${r.status}`);
+      const data = (await r.json()).data ?? [];
+      const byId = new Map(data.map((m) => [m.id, m]));
+      const table = {};
+      for (const id of ids) {
+        const ref = gumloopPriceRef(id);
+        const orId = ref.orIds.find((x) => byId.has(x));
+        if (!orId) continue;
+        let entry;
+        if (ref.fireworks) {
+          // OpenRouter's headline price is the cheapest host; Gumloop pays Fireworks.
+          try {
+            const er = await fetch(`${OPENROUTER_API}/models/${orId}/endpoints`, { signal: AbortSignal.timeout(2e4) });
+            const eps = er.ok ? (await er.json()).data?.endpoints ?? [] : [];
+            const pick = (name) => eps.filter((e) => e.provider_name === name && perMillion(e.pricing ?? {})).sort((a, b) => Number(a.pricing.prompt) - Number(b.pricing.prompt))[0];
+            const ep = pick("Fireworks") ?? (ref.vendorName ? pick(ref.vendorName) : void 0);
+            if (ep) entry = orPriceEntry(ep.pricing);
+          } catch {
+          }
+        }
+        entry ??= orPriceEntry(byId.get(orId).pricing ?? {});
+        if (entry) table[id] = { ...entry, ref: orId };
+      }
+      this.st.prices = { at: Date.now(), table };
+      this.save();
+    })().finally(() => {
+      this.pricesInflight = void 0;
+    });
+    return this.pricesInflight;
+  }
+  // ---- accounting ----
+  charge(id, model, usage) {
+    if (!usage) return;
+    const entry = this.priceEntry(model);
+    const l = this.ledgerOf(id);
+    const rec = { at: Date.now(), model };
+    if (entry) {
+      const c = gumloopUsageCost(entry, usage);
+      rec.usd = Math.round(c.usd * 1e6) / 1e6;
+      // "call": every completion is rounded up to a whole credit; "exact": fractional
+      // credits accumulate (the balance only ever shows whole numbers).
+      rec.credits = this.roundingMode() === "exact" ? Math.round(c.usd / GUMLOOP_USD_PER_CREDIT * 1e4) / 1e4 : creditsForUsd(c.usd);
+      Object.assign(rec, { in: c.prompt, out: c.out, cr: c.read, cw: c.write });
+      l.spent += rec.credits;
+      l.month.credits += rec.credits;
+      l.month.usd = Math.round((l.month.usd + c.usd) * 1e6) / 1e6;
+    } else {
+      rec.unpriced = true;
+      rec.in = Number(usage.prompt_tokens) || 0;
+      rec.out = Number(usage.completion_tokens) || 0;
+      l.unpriced = (l.unpriced ?? 0) + 1;
+    }
+    l.month.calls += 1;
+    l.recent.push(rec);
+    if (l.recent.length > GUMLOOP_RECENT_MAX) l.recent.splice(0, l.recent.length - GUMLOOP_RECENT_MAX);
+    this.save();
+    return rec;
+  }
+  roundingMode() {
+    return this.st.rounding === "exact" ? "exact" : "call";
+  }
+  remainingOf(id) {
+    const l = this.ledgerOf(id);
+    if (!l.anchor) return void 0;
+    return Math.max(0, Math.floor(l.anchor.balance - l.spent + 1e-9));
+  }
+  publicState() {
+    const g = this.st;
+    const active = this.activeAccount();
+    return {
+      activeId: active?.id ?? null,
+      models: this.models().length,
+      modelsAt: g.models?.at ?? null,
+      pricesAt: g.prices?.at ?? null,
+      accounts: g.accounts.map((a) => {
+        const l = this.ledgerOf(a.id);
+        const cd = this.cooldowns.get(a.id);
+        return {
+          id: a.id,
+          label: a.label,
+          userTail: a.userTail,
+          keyTail: a.keyTail,
+          active: a.id === active?.id,
+          allowance: a.allowance ?? GUMLOOP_DEFAULT_ALLOWANCE,
+          remaining: this.remainingOf(a.id) ?? null,
+          calibratedAt: l.anchor?.at ?? null,
+          calibratedBalance: l.anchor?.balance ?? null,
+          spentSinceCalibration: l.spent,
+          month: l.month,
+          unpriced: l.unpriced ?? 0,
+          unbilledStops: l.unbilledStops ?? 0,
+          exhaustedAt: l.exhaustedAt ?? null,
+          cooldown: cd && cd > Date.now() ? cd : null,
+          last: l.recent[l.recent.length - 1] ?? null
+        };
+      })
+    };
+  }
+  // ---- relay ----
+  normalizeBody(body) {
+    if (body.stream === true) body.stream_options = { ...isRecord(body.stream_options) ? body.stream_options : {}, include_usage: true };
+    else delete body.stream_options;
+    if (body.max_completion_tokens !== void 0) {
+      if (body.max_tokens === void 0) body.max_tokens = body.max_completion_tokens;
+      delete body.max_completion_tokens;
+    }
+    delete body.store;
+    if (typeof body.reasoning_effort === "string") {
+      if (!isRecord(body.reasoning) && body.reasoning_effort !== "none") body.reasoning = { effort: body.reasoning_effort };
+      delete body.reasoning_effort;
+    }
+    return body;
+  }
+  /** Not cooling down, and not marked out of credits within the last 12h. */
+  usable(a, now = Date.now()) {
+    if ((this.cooldowns.get(a.id) ?? 0) > now) return false;
+    const ex = this.ledgerOf(a.id).exhaustedAt;
+    return !ex || now - ex > 12 * 36e5;
+  }
+  nextAccount(exclude) {
+    return this.accounts().find((a) => !exclude.has(a.id) && this.usable(a));
+  }
+  async attempt(acct, payload, abort, streaming) {
+    const cred = await this.credential(acct.id);
+    if (!cred) throw new Error(`Gumloop account ${acct.label} has no stored key`);
+    for (let i = 0; ; i++) {
+      let res;
+      let err;
+      try {
+        res = await this.proxy.upstream(`${GUMLOOP_WS}/chat/completions`, this.headers(cred), payload, {}, abort, streaming);
+      } catch (e) {
+        if (abort?.aborted) throw e;
+        err = e;
+      }
+      if (res && !TRANSIENT_STATUS.has(res.status)) return res;
+      const max = err instanceof TimeoutError ? 1 : TRANSIENT_RETRIES;
+      if (i >= max || abort?.aborted) {
+        if (res) return res;
+        throw err;
+      }
+      await res?.body?.cancel().catch(() => {
+      });
+      await sleepAbortable(transientDelay(i, res), abort);
+    }
+  }
+  /** Classify a failed response: "auth" | "credits" | "rate" | undefined. */
+  async classify(res) {
+    if (res.ok) return void 0;
+    const text = await res.clone().text().catch(() => "");
+    if (/credit_limit|insufficient.credit|out of credits|credit balance|tier_limit/i.test(text) || res.status === 402) return "credits";
+    if (res.status === 401 || res.status === 403) return "auth";
+    if (res.status === 429) return "rate";
+    return void 0;
+  }
+  async relay(req, res, rawBody) {
+    let body;
+    try {
+      const parsed = JSON.parse(rawBody || "{}");
+      body = isRecord(parsed) ? parsed : {};
+    } catch {
+      this.proxy.sendJson(res, 400, openaiError("invalid JSON body"));
+      return;
+    }
+    let acct = this.activeAccount();
+    if (!acct) {
+      this.proxy.sendJson(res, 503, openaiError("vwFactory: no Gumloop account; add one in Settings \u2192 Factory \u2192 Gumloop"));
+      return;
+    }
+    if (!this.usable(acct)) {
+      const alt = this.nextAccount(/* @__PURE__ */ new Set([acct.id]));
+      if (alt) {
+        this.st.activeId = alt.id;
+        this.save();
+        acct = alt;
+      }
+    }
+    const model = this.resolveModel(body.model);
+    if (model) body.model = model;
+    this.normalizeBody(body);
+    const payload = JSON.stringify(body);
+    const streaming = body.stream === true;
+    const abort = new AbortController();
+    res.on("close", () => {
+      if (!res.writableFinished) abort.abort();
+    });
+    let upstreamRes;
+    const tried = /* @__PURE__ */ new Set();
+    for (; ; ) {
+      tried.add(acct.id);
+      try {
+        upstreamRes = await this.attempt(acct, payload, abort.signal, streaming);
+      } catch (e) {
+        if (!res.headersSent && !res.destroyed) this.proxy.sendJson(res, e instanceof TimeoutError ? 504 : 502, openaiError(errorMessage(e)));
+        return;
+      }
+      const kind = await this.classify(upstreamRes);
+      if (!kind) break;
+      if (kind === "credits") {
+        const l = this.ledgerOf(acct.id);
+        l.exhaustedAt = Date.now();
+        if (l.anchor) l.spent = l.anchor.balance;
+        this.save();
+      } else if (kind === "rate") {
+        const ra = parseRetryAfter(upstreamRes.headers.get("retry-after"));
+        this.cooldowns.set(acct.id, Date.now() + (ra ?? 6e4));
+      }
+      const next = this.nextAccount(tried);
+      if (!next || abort.signal.aborted) break;
+      await upstreamRes.body?.cancel().catch(() => {
+      });
+      this.proxy.emitter.fire(`Gumloop: ${acct.label} ${kind === "credits" ? "out of credits" : kind === "rate" ? "rate-limited" : "rejected the key"} \u2192 switched to ${next.label}`);
+      this.st.activeId = next.id;
+      this.save();
+      acct = next;
+    }
+    if (abort.signal.aborted) {
+      await upstreamRes.body?.cancel().catch(() => {
+      });
+      return;
+    }
+    const ct = upstreamRes.headers.get("content-type") ?? "application/json";
+    res.writeHead(upstreamRes.status, { "Content-Type": ct, "Cache-Control": "no-cache" });
+    if (!upstreamRes.body) {
+      res.end();
+      return;
+    }
+    const isSse = ct.includes("text/event-stream");
+    const billed = acct.id;
+    const tap = upstreamRes.ok ? new GumloopUsageTap(isSse, (usage) => {
+      try {
+        this.charge(billed, model, usage);
+      } catch {
+      }
+    }) : void 0;
+    await this.proxy.pipeThrough(Readable.fromWeb(upstreamRes.body), res, isSse ? "chat" : void 0, abort.signal, tap);
+    if (tap && !tap.usage && abort.signal.aborted) {
+      // Client stopped mid-stream: Gumloop still bills the tokens produced so far,
+      // but the usage block never arrived. Leave a marker so the user knows to calibrate.
+      const l = this.ledgerOf(billed);
+      l.unbilledStops = (l.unbilledStops ?? 0) + 1;
+      this.save();
+    }
+  }
+  /** Background upkeep: model list and prices. */
+  async tick() {
+    if (!this.accounts().length) return;
+    await this.refreshModels().catch(() => {
+    });
+    await this.refreshPrices().catch(() => {
+    });
   }
 };
 
@@ -2975,7 +3624,32 @@ function providerKey(family) {
   if (family === "openai-responses") return "factory-gpt";
   return "factory";
 }
-function syncPatchModels(patchPath, entries) {
+var GUMLOOP_PROVIDER_HEAD = [
+  "      gumloop:",
+  "        displayName: Gumloop",
+  "        apiKeyEnv: VWFACTORY_TOKEN",
+  "        api: openai-completions",
+  "        baseURL: http://127.0.0.1:4199/gumloop/v1",
+  "        compat:",
+  "          thinkingFormat: openrouter",
+  "          maxTokensField: max_tokens",
+  "        models:"
+];
+function yamlQuote(s) {
+  return `"${String(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+function gumloopPatchLines(glEntries) {
+  if (!glEntries?.length) return [];
+  const lines = [...GUMLOOP_PROVIDER_HEAD];
+  for (const m of glEntries) {
+    lines.push(`          - id: ${yamlQuote(m.alias || m.id)}`, `            name: ${yamlQuote(m.name)}`);
+    if (m.vision) lines.push("            input: [text, image]");
+    if (m.context) lines.push(`            contextWindow: ${m.context}`);
+    if (m.reasoning) lines.push("            reasoningEfforts: { off: null, low: low, medium: medium, high: high }");
+  }
+  return lines;
+}
+function syncPatchModels(patchPath, entries, glEntries = []) {
   let src;
   try {
     src = fs.readFileSync(patchPath, "utf8");
@@ -3002,6 +3676,7 @@ function syncPatchModels(patchPath, entries) {
       }
     }
   }
+  block.push(...gumloopPatchLines(glEntries));
   const blockText = block.join("\n");
   const start = src.indexOf("    providers:");
   if (start < 0) return false;
@@ -4036,7 +4711,13 @@ var UI_RPC_ALLOWED = {
   "POST /api/update/install": true,
   "POST /api/update/rollback": true,
   "POST /api/refresh": true,
-  "POST /api/export": true
+  "POST /api/export": true,
+  "GET /api/gumloop/state": true,
+  "POST /api/gumloop/add": true,
+  "POST /api/gumloop/remove": true,
+  "POST /api/gumloop/switch": true,
+  "POST /api/gumloop/calibrate": true,
+  "POST /api/gumloop/refresh": true
 };
 function uiJson(status, value) {
   return new Response(JSON.stringify(value), {
@@ -4093,7 +4774,15 @@ function registerUiBridge(ctx, store) {
 function apply(ctx) {
   const store = new FileStore(HOME);
   const cfg = () => ({ get: (_k, d) => d });
-  const proxy = new FactoryProxy(store, cfg, {
+  let proxy;
+  const syncModels = async () => {
+    const entries = await proxy.catalogEntries();
+    const changed = syncPatchModels(PATCH, entries, proxy.gumloop.patchEntries());
+    if (changed) ctx.logger?.info("vwFactory: model list updated in cordis.patch.yml (restart dsh to apply)");
+    return changed;
+  };
+  proxy = new FactoryProxy(store, cfg, {
+    syncModels,
     login: async () => {
       const flow = await startDeviceLogin(store);
       void flow.done;
@@ -4122,11 +4811,9 @@ function apply(ctx) {
             await proxy.probeVision(entries);
           } catch {
           }
-          if (syncPatchModels(PATCH, entries)) {
-            ctx.logger?.info(
-              "vwFactory: model list updated in cordis.patch.yml (restart dsh to apply)"
-            );
-          }
+          await proxy.gumloop.tick().catch(() => {
+          });
+          await syncModels();
         }).catch(() => {
         });
       } catch (e) {

@@ -126,7 +126,40 @@ window.__ModuleLoader__.load({
 			offline: "无法连接 vwFactory：{e}",
 			retry: "重试",
 			plan: "套餐 {p}",
-			balance: "额外余额 ${v}"
+			balance: "额外余额 ${v}",
+			glTitle: "Gumloop",
+			glIntro: "Gumloop 官方 API 不提供余额查询：插件按官方价格逐笔计算每次调用的花费（每次向上取整到 1 积分），从你校准的余额里扣减。网页端任务（如 Gumball）的花费要下次校准才会反映出来。",
+			glAdd: "添加",
+			glAddTitle: "添加 Gumloop 账号",
+			glAddHint: "Gumloop → 设置 → Connectors → Gumloop API Key：生成 Key，并复制同一页上的 User ID。",
+			glKey: "API Key",
+			glUser: "User ID",
+			glName: "名称（可选）",
+			glAdded: "已添加 {name}。重启 DSH 后，模型选择里会出现 Gumloop 分组。",
+			glAddedNoRestart: "已添加 {name}",
+			glEmpty: "还没有 Gumloop 账号",
+			glLeft: "剩余 {n}",
+			glOf: "/ {n}",
+			glUncal: "未校准",
+			glCalibrate: "校准",
+			glCalHint: "填入 Gumloop 网页左下角显示的剩余积分",
+			glCalPh: "例如 7142",
+			glCalDone: "已校准：剩余 {n}",
+			glCalAgo: "{t}校准",
+			glMonth: "本月插件用了 {c} 积分 · {n} 次调用",
+			glLast: "上一笔：{m} · {c} 积分",
+			glExhausted: "积分用完",
+			glStops: "有 {n} 次中途停止的请求没拿到用量，建议重新校准",
+			glUnpriced: "{n} 次调用的模型没有价格，未计入",
+			glRefreshModels: "刷新模型和价格",
+			glRefreshed: "已刷新：{n} 个模型",
+			glPillLeft: "Gumloop 剩余 {n}",
+			glPillUncal: "Gumloop · 未校准",
+			glPillNone: "Gumloop · 无账号",
+			glMakeActive: "设为当前",
+			glJustNow: "刚刚",
+			glDayAgo: "{n} 天前",
+			glRestart: "模型列表已更新，重启 DSH 后生效"
 		};
 		const en = {
 			nav: "Factory accounts",
@@ -236,7 +269,40 @@ window.__ModuleLoader__.load({
 			offline: "Cannot reach vwFactory: {e}",
 			retry: "Retry",
 			plan: "Plan {p}",
-			balance: "Extra balance ${v}"
+			balance: "Extra balance ${v}",
+			glTitle: "Gumloop",
+			glIntro: "Gumloop's API has no balance endpoint: every call is priced locally at list price (rounded up to 1 credit per call) and subtracted from the balance you calibrate. Web-side spend (e.g. Gumball) shows up at the next calibration.",
+			glAdd: "Add",
+			glAddTitle: "Add Gumloop account",
+			glAddHint: "Gumloop → Settings → Connectors → Gumloop API Key: create a key and copy the User ID on the same page.",
+			glKey: "API Key",
+			glUser: "User ID",
+			glName: "Name (optional)",
+			glAdded: "Added {name}. Restart DSH to see the Gumloop model group.",
+			glAddedNoRestart: "Added {name}",
+			glEmpty: "No Gumloop accounts yet",
+			glLeft: "{n} left",
+			glOf: "/ {n}",
+			glUncal: "Not calibrated",
+			glCalibrate: "Calibrate",
+			glCalHint: "Enter the remaining credits shown at the bottom left of the Gumloop web page",
+			glCalPh: "e.g. 7142",
+			glCalDone: "Calibrated: {n} left",
+			glCalAgo: "calibrated {t}",
+			glMonth: "This month via plugin: {c} credits · {n} calls",
+			glLast: "Last: {m} · {c} credits",
+			glExhausted: "Out of credits",
+			glStops: "{n} stopped requests had no usage; consider recalibrating",
+			glUnpriced: "{n} calls used unpriced models and were not counted",
+			glRefreshModels: "Refresh models & prices",
+			glRefreshed: "Refreshed: {n} models",
+			glPillLeft: "Gumloop {n} left",
+			glPillUncal: "Gumloop · not calibrated",
+			glPillNone: "Gumloop · no account",
+			glMakeActive: "Make current",
+			glJustNow: "just now",
+			glDayAgo: "{n}d ago",
+			glRestart: "Model list updated; restart DSH to apply"
 		};
 		const fmt = (s, vars) => String(s).replace(/\{(\w+)\}/g, (_, k) => (vars && vars[k] !== undefined ? String(vars[k]) : ""));
 
@@ -696,6 +762,186 @@ window.__ModuleLoader__.load({
 			);
 		}
 
+		// ---------- Gumloop accounts ----------
+		const glNum = (n) => Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 0 });
+		const glAgo = (t, ms) => {
+			if (!ms) return "";
+			const min = Math.floor((Date.now() - ms) / 6e4);
+			if (min < 1) return t("glJustNow");
+			if (min < 60) return fmt(t("minAgo"), { n: min });
+			if (min < 48 * 60) return fmt(t("hourAgo"), { n: Math.floor(min / 60) });
+			return fmt(t("glDayAgo"), { n: Math.floor(min / 1440) });
+		};
+		/** Used share of the monthly allowance (for rings / colours), undefined if uncalibrated. */
+		const glUsedPct = (acc) => (acc && acc.remaining != null && acc.allowance > 0
+			? Math.min(100, Math.max(0, 100 - (acc.remaining / acc.allowance) * 100)) : undefined);
+		const glTone = (p) => (p === undefined ? undefined : p >= 90 ? V.danger : p >= 70 ? V.warn : undefined);
+		const glModelName = (id) => String(id || "").replace(/^accounts\/fireworks\/(models|routers)\//, "");
+		function GlCalibrate({ t, acc, notify, onDone }) {
+			const [val, setVal] = useState("");
+			const [busy, setBusy] = useState(false);
+			const submit = async () => {
+				const n = Number(String(val).replace(/[,\s]/g, ""));
+				if (!Number.isFinite(n) || n < 0 || String(val).trim() === "") { notify(t("glCalHint"), true); return; }
+				setBusy(true);
+				try {
+					await rpc("POST", "/api/gumloop/calibrate", { id: acc.id, balance: n });
+					notify(fmt(t("glCalDone"), { n: glNum(n) }));
+					setVal("");
+					onDone(true);
+				} catch (e) {
+					notify(e.message, true);
+				} finally {
+					setBusy(false);
+				}
+			};
+			return h("div", { style: { display: "flex", gap: 8, alignItems: "center" }, onClick: (e) => e.stopPropagation() },
+				h("input", {
+					className: "vwf-input", inputMode: "numeric", autoFocus: true, value: val, placeholder: t("glCalPh"),
+					title: t("glCalHint"), "aria-label": t("glCalHint"), style: { flex: 1, minWidth: 0 },
+					onChange: (e) => setVal(e.target.value),
+					onKeyDown: (e) => { if (e.key === "Enter") submit(); else if (e.key === "Escape") onDone(false); }
+				}),
+				h("button", { type: "button", className: "vwf-btn sm primary", disabled: busy, onClick: submit }, t("glCalibrate")));
+		}
+		function GlAddPanel({ t, notify, onDone }) {
+			const [key, setKey] = useState("");
+			const [user, setUser] = useState("");
+			const [label, setLabel] = useState("");
+			const [busy, setBusy] = useState(false);
+			const submit = async () => {
+				if (!key.trim() || !user.trim()) { notify(t("glAddHint"), true); return; }
+				setBusy(true);
+				try {
+					const r = await rpc("POST", "/api/gumloop/add", { apiKey: key.trim(), userId: user.trim(), label: label.trim() || undefined });
+					const name = label.trim() || r.message.replace(/^added /, "");
+					notify(fmt(t(r.modelsChanged ? "glAdded" : "glAddedNoRestart"), { name }));
+					onDone(true);
+				} catch (e) {
+					notify(e.message, true);
+				} finally {
+					setBusy(false);
+				}
+			};
+			const mono = { fontFamily: "ui-monospace,SFMono-Regular,Consolas,monospace", fontSize: 12 };
+			return h("div", { className: "vwf-card", style: { gap: 8 } },
+				h("div", { style: { fontSize: 14, fontWeight: 500 } }, t("glAddTitle")),
+				h("div", { style: { fontSize: 12, color: V.fg3 } }, t("glAddHint")),
+				h("input", { className: "vwf-input", type: "password", autoComplete: "off", spellCheck: false, value: key, placeholder: t("glKey"), style: mono, onChange: (e) => setKey(e.target.value) }),
+				h("input", { className: "vwf-input", autoComplete: "off", spellCheck: false, value: user, placeholder: t("glUser"), style: mono, onChange: (e) => setUser(e.target.value) }),
+				h("input", { className: "vwf-input", value: label, placeholder: t("glName"), onChange: (e) => setLabel(e.target.value) }),
+				h("div", { style: { display: "flex", justifyContent: "flex-end", gap: 8 } },
+					h("button", { type: "button", className: "vwf-btn", disabled: busy, onClick: () => onDone(false) }, t("cancel")),
+					h("button", { type: "button", className: "vwf-btn primary", disabled: busy, onClick: submit }, busy ? t("adding") : t("submit"))));
+		}
+		/** Remaining-credits bar plus the month / last-call / warning lines. */
+		function GlDetails({ t, acc }) {
+			const p = glUsedPct(acc);
+			const lines = [
+				acc.remaining != null ? `${fmt(t("glLeft"), { n: glNum(acc.remaining) })} ${fmt(t("glOf"), { n: glNum(acc.allowance) })} · ${fmt(t("glCalAgo"), { t: glAgo(t, acc.calibratedAt) })}` : t("glCalHint"),
+				acc.month ? fmt(t("glMonth"), { c: glNum(acc.month.credits), n: acc.month.calls }) : "",
+				acc.last && !acc.last.unpriced ? fmt(t("glLast"), { m: glModelName(acc.last.model), c: glNum(acc.last.credits) }) : ""
+			].filter(Boolean);
+			const warns = [
+				acc.unbilledStops ? fmt(t("glStops"), { n: acc.unbilledStops }) : "",
+				acc.unpriced ? fmt(t("glUnpriced"), { n: acc.unpriced }) : ""
+			].filter(Boolean);
+			return h("div", { style: { display: "flex", flexDirection: "column", gap: 6, fontSize: 12, color: V.fg2 } },
+				p === undefined ? null : h("div", { style: { height: 6, borderRadius: 3, background: "var(--dsw-alias-bg-layer-3, rgba(127,127,127,.18))", overflow: "hidden" } },
+					h("div", { style: { width: `${100 - p}%`, height: "100%", borderRadius: 3, background: glTone(p) || V.accent } })),
+				...lines.map((l, i) => h("div", { key: i }, l)),
+				...warns.map((w, i) => h("div", { key: "w" + i, style: { color: V.warn } }, w)));
+		}
+		function GlCard({ t, acc, busy, onAction, notify, reload, single }) {
+			const [open, setOpen] = useState(!!acc.active || !!single);
+			const [cal, setCal] = useState(false);
+			const p = glUsedPct(acc);
+			const toggle = () => setOpen((v) => !v);
+			const meta = [acc.userTail ? `user …${acc.userTail}` : "", acc.keyTail ? `key …${acc.keyTail}` : ""].filter(Boolean).join("\n");
+			return h("li", { className: "vwf-card" + (acc.active ? " on" : ""), style: { listStyle: "none", gap: open || cal ? 10 : 0 } },
+				h("div", { className: "vwf-acc-head", onClick: toggle },
+					h("button", {
+						type: "button", className: "vwf-chev", "aria-expanded": open, title: open ? t("collapse") : t("expand"),
+						onClick: (e) => { e.stopPropagation(); toggle(); }
+					}, h("svg", { width: 10, height: 10, viewBox: "0 0 10 10", "aria-hidden": true },
+						h("path", { d: "M3.5 1.5 7 5 3.5 8.5", fill: "none", stroke: "currentColor", strokeWidth: 1.6, strokeLinecap: "round", strokeLinejoin: "round" }))),
+					h("span", { className: "vwf-acc-name", title: meta ? `${acc.label}\n${meta}` : acc.label }, acc.label),
+					acc.active ? h("span", { className: "vwf-dot", title: t("active"), role: "img", "aria-label": t("active") }) : null,
+					acc.exhaustedAt ? h("span", { className: "vwf-badge", style: { color: V.danger, border: `.5px solid ${V.danger}` } }, t("glExhausted")) : null,
+					h("span", { style: { flex: 1 } }),
+					h("span", { style: { fontSize: 13, fontVariantNumeric: "tabular-nums", color: acc.remaining == null ? V.fg3 : glTone(p) || V.fg } },
+						acc.remaining == null ? t("glUncal") : fmt(t("glLeft"), { n: glNum(acc.remaining) })),
+					h("button", {
+						type: "button", className: "vwf-btn sm", disabled: busy, title: t("glCalHint"),
+						onClick: (e) => { e.stopPropagation(); setCal((v) => !v); }
+					}, t("glCalibrate")),
+					h(MoreMenu, {
+						t, disabled: busy, items: [
+							acc.active ? null : { key: "switch", label: t("glMakeActive"), run: () => onAction("switch", acc) },
+							{ key: "refresh", label: t("glRefreshModels"), run: () => onAction("refresh", acc) },
+							{ key: "remove", label: t("remove"), confirm: t("confirmRemove"), danger: true, run: () => onAction("remove", acc) }
+						]
+					})),
+				cal ? h(GlCalibrate, { t, acc, notify, onDone: (ok) => { setCal(false); if (ok) reload(); } }) : null,
+				open ? h(GlDetails, { t, acc }) : null);
+		}
+		function GlSection({ t, gl, notify, reload }) {
+			const [adding, setAdding] = useState(false);
+			const [busyId, setBusyId] = useState(null);
+			const accs = (gl && gl.accounts) || [];
+			const onAction = async (kind, acc) => {
+				setBusyId(acc.id);
+				try {
+					if (kind === "switch") {
+						await rpc("POST", "/api/gumloop/switch", { id: acc.id });
+						notify(fmt(t("switched"), { name: acc.label }));
+					} else if (kind === "refresh") {
+						const r = await rpc("POST", "/api/gumloop/refresh", {});
+						notify(fmt(t("glRefreshed"), { n: r.models }) + (r.modelsChanged ? "\n" + t("glRestart") : "") + (r.priceError ? `\n${r.priceError}` : ""), !!r.priceError);
+					} else if (kind === "remove") {
+						const r = await rpc("POST", "/api/gumloop/remove", { id: acc.id });
+						notify(fmt(t("removed"), { name: acc.label }) + (r.modelsChanged ? "\n" + t("glRestart") : ""));
+					}
+				} catch (e) {
+					notify(e.message, true);
+				} finally {
+					setBusyId(null);
+					await reload();
+				}
+			};
+			return h(React.Fragment, null,
+				h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginTop: 10 } },
+					h("h3", { style: { margin: 0, fontSize: 15, fontWeight: 600, flex: 1 }, title: t("glIntro") }, t("glTitle")),
+					h("button", { type: "button", className: "vwf-btn sm", onClick: () => setAdding((v) => !v) }, adding ? t("cancel") : t("glAdd"))),
+				adding ? h(GlAddPanel, { t, notify, onDone: (ok) => { setAdding(false); if (ok) void reload(); } }) : null,
+				accs.length === 0 && !adding
+					? h("div", { className: "vwf-card", style: { fontSize: 13, color: V.fg3, alignItems: "center", textAlign: "center", padding: 16 }, title: t("glIntro") }, t("glEmpty"))
+					: h("ul", { style: { margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 8 } },
+						...accs.map((acc) => h(GlCard, { key: acc.id, t, acc, busy: busyId === acc.id, onAction, notify, reload, single: accs.length === 1 }))));
+		}
+		/** Composer-pill popover body while a Gumloop model is selected. */
+		function GlPopBody({ t, gl, reload }) {
+			const [msg, setMsg] = useState(null);
+			const notify = (text, isError) => setMsg({ text, isError });
+			const accs = (gl && gl.accounts) || [];
+			const active = accs.find((a) => a.active);
+			if (!active) return h("div", { style: { color: V.fg3 } }, t("glPillNone"));
+			const switchTo = async (acc) => {
+				try { await rpc("POST", "/api/gumloop/switch", { id: acc.id }); await reload(); } catch (e) { notify(e.message, true); }
+			};
+			return h(React.Fragment, null,
+				h("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
+					h("span", { style: { fontSize: 13, fontWeight: 600, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" } }, active.label),
+					h("span", { style: { fontSize: 13, fontVariantNumeric: "tabular-nums", color: active.remaining == null ? V.fg3 : glTone(glUsedPct(active)) || V.fg } },
+						active.remaining == null ? t("glUncal") : fmt(t("glLeft"), { n: glNum(active.remaining) }))),
+				h(GlDetails, { t, acc: active }),
+				h(GlCalibrate, { t, acc: active, notify, onDone: (ok) => { if (ok) void reload(); } }),
+				accs.length > 1 ? h("div", { style: { display: "flex", flexWrap: "wrap", gap: 6 } },
+					...accs.filter((a) => !a.active).map((a) => h("button", {
+						key: a.id, type: "button", className: "vwf-btn sm", title: t("glMakeActive"), onClick: () => switchTo(a)
+					}, `${a.label} · ${a.remaining == null ? t("glUncal") : glNum(a.remaining)}`))) : null,
+				msg ? h("div", { role: "status", style: { color: msg.isError ? V.danger : V.fg2 } }, msg.text) : null);
+		}
 		function Section({ t }) {
 			ensureCss();
 			const [state, setState] = useState(null);
@@ -837,6 +1083,7 @@ window.__ModuleLoader__.load({
 									key: acc.id, t, acc, busy: busyId === acc.id, onAction, balance: state.routing === "balance",
 									defaultOpen: ids.length === 1 || (acc.active && state.routing !== "balance")
 								}))),
+						h(GlSection, { t, gl: state.gumloop, notify, reload: load }),
 						h("div", { className: "vwf-card vwf-list", style: { marginTop: 6 } },
 							h("div", { className: "vwf-row" },
 								h("div", { className: "vwf-row-main", title: t("autoSwitchTip") },
@@ -1166,7 +1413,8 @@ window.__ModuleLoader__.load({
 			const ms = modelStore || NO_MODEL_STORE;
 			const model = React.useSyncExternalStore(ms.subscribe, ms.getSnapshot, ms.getSnapshot);
 			const choice = model ? model.pending || model.current : null;
-			const shown = !modelStore || (choice != null && isFactoryProvider(choice.provider));
+			const isGl = choice != null && choice.provider === "gumloop";
+			const shown = !modelStore || (choice != null && (isFactoryProvider(choice.provider) || isGl));
 			const snap = useHub(shown);
 			const [open, setOpen] = useState(false);
 			const [pos, setPos] = useState(null);
@@ -1208,10 +1456,20 @@ window.__ModuleLoader__.load({
 			const active = state && state.identities.find((i) => i.active);
 			const q = active && active.quota;
 			let ring, label, tip;
+			const gl = state && state.gumloop;
+			const glActive = gl && gl.accounts.find((a) => a.active);
 			if (!state) {
 				ring = h(MiniRing, { p: undefined });
 				label = error ? t("pillOffline") : t("pillLoading");
 				tip = error ? fmt(t("offline"), { e: error }) : t("loading");
+			} else if (isGl) {
+				const p = glUsedPct(glActive);
+				ring = h(MiniRing, { p });
+				label = !glActive ? t("glPillNone")
+					: glActive.remaining == null ? t("glPillUncal")
+						: h("span", { style: { color: glTone(p) } }, fmt(t("glPillLeft"), { n: glNum(glActive.remaining) }));
+				tip = glActive ? [glActive.label, glActive.calibratedAt ? fmt(t("glCalAgo"), { t: glAgo(t, glActive.calibratedAt) }) : t("glCalHint"),
+					glActive.month ? fmt(t("glMonth"), { c: glNum(glActive.month.credits), n: glActive.month.calls }) : ""].filter(Boolean).join("\n") : t("glAddHint");
 			} else if (state.routing === "balance" && state.identities.length) {
 				const ids = state.identities;
 				const ws = ids.map((i) => worstOf(i.quota)).filter((w) => w !== undefined);
@@ -1253,7 +1511,7 @@ window.__ModuleLoader__.load({
 				? h("div", {
 					ref: panelRef, className: "vwf-pop", role: "dialog", "aria-label": t("paneTitle"),
 					style: pos ? { left: pos.left, top: pos.top } : { left: -9999, top: -9999, visibility: "hidden" }
-				}, h(QuotaPanelBody, { t, snap }))
+				}, isGl ? h(GlPopBody, { t, gl, reload: hub.load }) : h(QuotaPanelBody, { t, snap }))
 				: null;
 			return h("span", { ref: anchorRef, style: { display: "inline-flex", minWidth: 0 } },
 				h("button", {
