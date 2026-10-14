@@ -3064,6 +3064,7 @@ var GumloopRelay = class {
     this.proxy = proxy;
     this.store = proxy.store;
     this.cooldowns = /* @__PURE__ */ new Map();
+    this.maxOut = /* @__PURE__ */ new Map();
     this.pricesInflight = void 0;
     this.modelsInflight = void 0;
   }
@@ -3423,7 +3424,9 @@ var GumloopRelay = class {
     const model = this.resolveModel(body.model);
     if (model) body.model = model;
     this.normalizeBody(body);
-    const payload = JSON.stringify(body);
+    const cap = this.maxOut.get(model);
+    if (cap && typeof body.max_tokens === "number" && body.max_tokens > cap) body.max_tokens = cap;
+    let payload = JSON.stringify(body);
     const streaming = body.stream === true;
     const abort = new AbortController();
     res.on("close", () => {
@@ -3435,6 +3438,20 @@ var GumloopRelay = class {
       tried.add(acct.id);
       try {
         upstreamRes = await this.attempt(acct, payload, abort.signal, streaming);
+        // DSH asks for a generous max_tokens; models with a lower output cap reject
+        // it ("max_tokens: 256000 > 128000"). Learn the cap and retry once.
+        if (upstreamRes.status === 400 && typeof body.max_tokens === "number") {
+          const m = /max_tokens:?\s*(\d+)\s*>\s*(\d+)/.exec(await upstreamRes.clone().text().catch(() => ""));
+          const limit = m ? Number(m[2]) : 0;
+          if (limit > 0 && limit < body.max_tokens) {
+            this.maxOut.set(model, limit);
+            body.max_tokens = limit;
+            payload = JSON.stringify(body);
+            await upstreamRes.body?.cancel().catch(() => {
+            });
+            upstreamRes = await this.attempt(acct, payload, abort.signal, streaming);
+          }
+        }
       } catch (e) {
         if (!res.headersSent && !res.destroyed) this.proxy.sendJson(res, e instanceof TimeoutError ? 504 : 502, openaiError(errorMessage(e)));
         return;

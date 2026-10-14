@@ -44,6 +44,10 @@ const mock = http.createServer(async (req, res) => {
   if (req.url.startsWith("/ws/chat/completions")) {
     const body = JSON.parse(raw || "{}");
     seen.push({ headers: req.headers, body, auth, user });
+    if (body.model === "claude-sonnet-5-5" && body.max_tokens > 128000) {
+      res.writeHead(400, { "Content-Type": "application/json" }).end(JSON.stringify({ error: { code: "provider_error", message: `The provider rejected the request: max_tokens: ${body.max_tokens} > 128000, which is the maximum allowed number of output tokens for claude-sonnet-5-5` } }));
+      return;
+    }
     if (chatMode === "creditsA" && auth.includes("AAAA")) {
       res.writeHead(403, { "Content-Type": "application/json" }).end('{"error":"credit_limit_exceeded","message":"You have reached your credit limit."}');
       return;
@@ -187,6 +191,15 @@ const glState = async () => (await (await fetch(P + "/api/state")).json()).gumlo
   const [s] = await chat({ model: "glm-5p3", max_tokens: 5, messages: [{ role: "user", content: "hi" }] });
   const last = (await glState()).accounts.find((x) => x.active).last;
   ok("6b alias mapped back to full Gumloop id (upstream + ledger)", s === 200 && seen[0]?.body.model === "accounts/fireworks/models/glm-5p3" && last.model === "accounts/fireworks/models/glm-5p3", seen[0]?.body.model);
+}
+// 6c. output cap learned from a 400 and applied up front afterwards
+{
+  seen.length = 0;
+  const [s] = await chat({ model: "claude-sonnet-5-5", max_tokens: 256000, messages: [{ role: "user", content: "hi" }] });
+  const first = seen.map((x) => x.body.max_tokens);
+  seen.length = 0;
+  const [s2] = await chat({ model: "claude-sonnet-5-5", max_tokens: 256000, messages: [{ role: "user", content: "hi" }] });
+  ok("6c max_tokens over model cap -> clamped + retried, then clamped up front", s === 200 && JSON.stringify(first) === "[256000,128000]" && s2 === 200 && seen.length === 1 && seen[0].body.max_tokens === 128000, `${first} / ${seen.map((x) => x.body.max_tokens)}`);
 }
 // 7. live prices: Fireworks endpoint price, long-context override
 {
