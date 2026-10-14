@@ -3356,6 +3356,11 @@ var GumloopRelay = class {
       if (!isRecord(body.reasoning) && body.reasoning_effort !== "none") body.reasoning = { effort: body.reasoning_effort };
       delete body.reasoning_effort;
     }
+    // Claude: Gumloop caches automatically, but with Anthropic's default 5-minute
+    // TTL, so a coding session idle for >5 min rewrites its whole context (~150
+    // credits for 150k tokens). Ask for the 1-hour TTL instead. Measured 2026-10:
+    // Gumloop bills 1h cache writes at the normal (5-minute) write price.
+    if (/^claude-/.test(String(body.model)) && body.cache_control === void 0) body.cache_control = { type: "ephemeral", ttl: "1h" };
     return body;
   }
   /** Not cooling down, and not marked out of credits within the last 12h. */

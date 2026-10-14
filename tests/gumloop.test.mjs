@@ -140,6 +140,7 @@ const glState = async () => (await (await fetch(P + "/api/state")).json()).gumlo
   ok("3 stream relayed intact", s === 200 && t.includes('"content":"Hi"') && t.includes("[DONE]"), `${s}`);
   ok("3 Gumloop auth headers; local token not forwarded", up.auth === "Bearer glkey-AAAAAAAAAAAAAAAAAAAA" && up.user === "userAAAA1111" && !JSON.stringify(up.headers).includes("LOCAL-PROXY-TOKEN"), up.auth);
   ok("3 body normalised", up.body.stream_options?.include_usage === true && up.body.max_tokens === 50 && up.body.max_completion_tokens === undefined && up.body.store === undefined && up.body.reasoning?.effort === "high" && up.body.reasoning_effort === undefined, JSON.stringify(up.body));
+  ok("3 Claude gets top-level 1h cache TTL", up.body.cache_control?.type === "ephemeral" && up.body.cache_control?.ttl === "1h", JSON.stringify(up.body.cache_control));
   const acc = (await glState()).accounts[0];
   // fallback sonnet price [2,10,0.1,2.5]: fresh 20k*2 + read 60k*0.1 + write 20k*2.5 + out 5k*10 = 146000/1e6 = $0.146 -> 29.2 -> 30 credits
   ok("3 stream usage billed (cache read/write, ceil)", acc.last?.credits === 30 && acc.last?.cr === 60000 && acc.last?.cw === 20000 && acc.month.credits === 30, JSON.stringify(acc.last));
@@ -190,6 +191,7 @@ const glState = async () => (await (await fetch(P + "/api/state")).json()).gumlo
   seen.length = 0;
   const [s] = await chat({ model: "glm-5p3", max_tokens: 5, messages: [{ role: "user", content: "hi" }] });
   const last = (await glState()).accounts.find((x) => x.active).last;
+  ok("6b non-Claude model gets no cache_control", seen[0] && seen[0].body.cache_control === undefined, JSON.stringify(seen[0]?.body.cache_control));
   ok("6b alias mapped back to full Gumloop id (upstream + ledger)", s === 200 && seen[0]?.body.model === "accounts/fireworks/models/glm-5p3" && last.model === "accounts/fireworks/models/glm-5p3", seen[0]?.body.model);
 }
 // 6c. output cap learned from a 400 and applied up front afterwards
