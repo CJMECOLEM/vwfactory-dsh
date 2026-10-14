@@ -26,7 +26,7 @@ foreach ($f in @("install.ps1", "uninstall.ps1")) {
 # 回归测试 (tests\ 不进压缩包): 任一失败即中止打包
 $node = Get-Command node -ErrorAction SilentlyContinue
 if ($node) {
-  foreach ($t in @("i18n", "proxy")) {
+  foreach ($t in @("i18n", "proxy", "gumloop")) {
     & $node.Source (Join-Path $here "tests\$t.test.mjs")
     if ($LASTEXITCODE -ne 0) { throw "tests\$t.test.mjs 未通过，已中止打包" }
   }

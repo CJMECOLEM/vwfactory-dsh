@@ -1,6 +1,16 @@
 ﻿vwFactory 更新日志
 ==================
 
+v0.4.9 (测试版)
+  - 新增: Gumloop 账号接入。设置 → Factory 账号 → Gumloop → 添加，填 Gumloop 的 API Key 和 User ID
+    (Gumloop 网页 → 设置 → Connectors → Gumloop API Key 页面)。添加后重启 DSH，模型选择里出现「Gumloop」分组
+  - 余额: Gumloop 的 API 不提供余额查询，插件按官方价格逐笔计算每次调用的花费 (含缓存读写，
+    每次调用向上取整到 1 积分，与 Gumloop 实际扣费规则一致)，从你「校准」时填的网页剩余积分里扣减。
+    选中 Gumloop 模型时，输入框下方的胶囊显示 Gumloop 剩余积分；网页端任务的花费要重新校准才会反映
+  - 多个 Gumloop 账号: 当前账号积分用完时自动换下一个账号重发；Gumloop 与 Factory 账号互不混用
+  - 提示: Gumloop 按官方原价计费，长对话第一轮要把整段上下文写入缓存，花费明显高于后续轮次
+  - 已知问题 (Gumloop 自身): DeepSeek V4.1 Flash、MiniMax M3、Kimi K2.7 Code、DeepSeek V4 Pro 目前在 Gumloop 上调用会报错
+
 v0.4.8
   - 新增: Gemini (3.1 Pro / 3.8 / 3.7 / 3.6 / 3.5 / 3 Flash) 与 Grok (4.7 / 4.6 / 4.5) 模型，
     更新后重启 DSH，检测通过的模型会自动出现在模型列表 (Gemini 在「Factory」，Grok 在「Factory (GPT)」)。
