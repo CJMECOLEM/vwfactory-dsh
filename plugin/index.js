@@ -7,6 +7,7 @@ import * as path4 from "node:path";
 // src/proxy.ts
 import * as http from "http";
 import { Readable } from "stream";
+import { StringDecoder } from "node:string_decoder";
 
 // src/constants.ts
 var FACTORY_API = "https://api.factory.ai";
@@ -451,6 +452,112 @@ function conversationKey(kind, body) {
   if (!first) return void 0;
   return sha256Hex([kind, normalizeModel(body.model), sys, first].join("\0"));
 }
+// ---- Gemini thought signatures ----
+// Gemini 3 attaches extra_content.google.thought_signature to each tool call
+// and rejects the next turn ("Function call is missing a thought_signature")
+// when the client does not send it back. DSH drops extra_content, so the proxy
+// remembers real signatures by tool-call id from responses and re-attaches
+// them; unknown ids get Google's documented skip value (Droid does the same).
+var GEMINI_SKIP_SIGNATURE = "skip_thought_signature_validator";
+var GEMINI_SIG_MAX = 4096;
+var geminiSignatures = /* @__PURE__ */ new Map();
+function rememberGeminiSignature(id, sig) {
+  if (typeof id !== "string" || !id || typeof sig !== "string" || !sig) return;
+  geminiSignatures.delete(id);
+  geminiSignatures.set(id, sig);
+  if (geminiSignatures.size > GEMINI_SIG_MAX) geminiSignatures.delete(geminiSignatures.keys().next().value);
+}
+function toolCallSignature(tc) {
+  const extra = isRecord(tc.extra_content) ? tc.extra_content : void 0;
+  const google = extra && isRecord(extra.google) ? extra.google : void 0;
+  const sig = google?.thought_signature;
+  return typeof sig === "string" && sig.length > 0 ? sig : void 0;
+}
+/** Fill missing signatures on assistant tool_calls (cache first, then skip value). */
+function applyGeminiSignatures(messages) {
+  const counts = { cached: 0, fallback: 0 };
+  if (!Array.isArray(messages)) return counts;
+  for (const m of messages) {
+    if (!isRecord(m) || m.role !== "assistant" || !Array.isArray(m.tool_calls)) continue;
+    for (const tc of m.tool_calls) {
+      if (!isRecord(tc) || toolCallSignature(tc)) continue;
+      const known = typeof tc.id === "string" ? geminiSignatures.get(tc.id) : void 0;
+      if (!isRecord(tc.extra_content)) tc.extra_content = {};
+      if (!isRecord(tc.extra_content.google)) tc.extra_content.google = {};
+      tc.extra_content.google.thought_signature = known ?? GEMINI_SKIP_SIGNATURE;
+      if (known) counts.cached++;
+      else counts.fallback++;
+    }
+  }
+  return counts;
+}
+/**
+ * Watches a chat-completions response (SSE or JSON) as it is piped to the
+ * client and records tool-call signatures. It never modifies the bytes. In a
+ * stream the id and the signature may arrive in different deltas, so both are
+ * tracked per (choice index, tool-call index).
+ */
+var GeminiSignatureTap = class {
+  constructor(sse) {
+    this.sse = sse;
+  }
+  decoder = new StringDecoder("utf8");
+  buf = "";
+  overflow = false;
+  idByKey = /* @__PURE__ */ new Map();
+  sigByKey = /* @__PURE__ */ new Map();
+  write(chunk) {
+    if (this.overflow) return;
+    this.buf += typeof chunk === "string" ? chunk : this.decoder.write(chunk);
+    if (this.sse) this.drain(false);
+    else if (this.buf.length > 64 * 1024 * 1024) {
+      this.overflow = true;
+      this.buf = "";
+    }
+  }
+  end() {
+    if (this.overflow) return;
+    this.buf += this.decoder.end();
+    if (this.sse) this.drain(true);
+    else {
+      try {
+        this.observe(JSON.parse(this.buf));
+      } catch {
+      }
+    }
+    this.buf = "";
+  }
+  drain(final) {
+    const lines = this.buf.split("\n");
+    this.buf = final ? "" : lines.pop() ?? "";
+    for (const raw of lines) {
+      const line = raw.trim();
+      if (!line.startsWith("data:")) continue;
+      const data = line.slice(5).trim();
+      if (!data.startsWith("{")) continue;
+      try {
+        this.observe(JSON.parse(data));
+      } catch {
+      }
+    }
+  }
+  observe(obj) {
+    if (!isRecord(obj) || !Array.isArray(obj.choices)) return;
+    obj.choices.forEach((choice, ci) => {
+      if (!isRecord(choice)) return;
+      const holder = isRecord(choice.delta) ? choice.delta : isRecord(choice.message) ? choice.message : void 0;
+      if (!holder || !Array.isArray(holder.tool_calls)) return;
+      holder.tool_calls.forEach((tc, ti) => {
+        if (!isRecord(tc)) return;
+        const key = `${typeof choice.index === "number" ? choice.index : ci}:${typeof tc.index === "number" ? tc.index : ti}`;
+        if (typeof tc.id === "string" && tc.id) this.idByKey.set(key, tc.id);
+        const sig = toolCallSignature(tc);
+        if (sig) this.sigByKey.set(key, sig);
+        rememberGeminiSignature(this.idByKey.get(key), this.sigByKey.get(key));
+      });
+    });
+  }
+};
 var CACHE_EPHEMERAL = { type: "ephemeral" };
 function cacheableBlock(b) {
   if (!isRecord(b) || b.cache_control) return false;
@@ -1920,6 +2027,7 @@ var FactoryProxy = class {
         "x-session-id": sessionId
       });
     } else if (kind === "chat") {
+      if (upstreamProviderFor(model) === "google") applyGeminiSignatures(body.messages);
       url = `${base}${OPENAI_BASE_PATH}/chat/completions`;
       headers = this.factoryHeaders(id, upstreamProviderFor(model), { "x-session-id": sessionId });
     } else {
@@ -2362,24 +2470,37 @@ ${this.mcpAccounts()}`;
       res.end();
       return;
     }
-    await this.pipeThrough(Readable.fromWeb(upstreamRes.body), res, ct.includes("text/event-stream") ? kind : void 0, abort.signal);
+    const isSse = ct.includes("text/event-stream");
+    const tap = kind === "chat" && upstreamRes.ok && upstreamProviderFor(model) === "google" ? new GeminiSignatureTap(isSse) : void 0;
+    await this.pipeThrough(Readable.fromWeb(upstreamRes.body), res, isSse ? kind : void 0, abort.signal, tap);
   }
   /**
    * Copy an upstream body to the client. If upstream dies mid-stream, an SSE
    * response gets a protocol-native error event before it ends, so the client
    * shows an error instead of waiting forever on a half-open stream.
    */
-  pipeThrough(stream, res, sseKind, signal) {
+  pipeThrough(stream, res, sseKind, signal, tap) {
     return new Promise((resolve) => {
       let tail = "";
+      // An observer must never break the relay: on any error it is dropped.
+      const observe = (fn) => {
+        if (!tap) return;
+        try {
+          fn();
+        } catch {
+          tap = void 0;
+        }
+      };
       stream.on("data", (chunk) => {
         if (sseKind) tail = (tail + chunk.toString("latin1")).slice(-2);
+        observe(() => tap.write(chunk));
         if (!res.write(chunk)) {
           stream.pause();
           res.once("drain", () => stream.resume());
         }
       });
       stream.on("end", () => {
+        observe(() => tap.end());
         res.end();
         resolve();
       });

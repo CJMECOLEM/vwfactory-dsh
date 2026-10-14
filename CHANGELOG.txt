@@ -6,6 +6,9 @@ vwFactory 更新日志
     Gemini 走 chat/completions + x-api-provider: google；Grok 走 /responses + x-api-provider: xai，
     且不发送 OpenAI-Platform 头 (带上会 403)。此前两者被判为 unsupported 而从模型列表中过滤，
     强行调用时以 fireworks 身份发出，返回 "Provider not available in this region"
+  - 修复: Gemini 多轮工具调用第二轮报 400 "Function call is missing a thought_signature"。
+    DSH 不回传 extra_content，现由代理从响应中按 tool-call id 缓存真实签名并在下一轮补回；
+    缓存里没有的 id 填 skip_thought_signature_validator (与 Droid 相同的兜底)
 
 v0.4.7
   - 修复: 通过 Factory 通道使用 Claude 时，中文 / emoji 偶发显示为乱码 (多字节字符被拆在两个网络包之间)，

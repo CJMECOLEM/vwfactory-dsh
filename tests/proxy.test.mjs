@@ -27,9 +27,44 @@ let scenario = "ok";
 const hits = { kA: 0, kB: 0 };
 let lastUpstreamClosed = null;
 const sse = (o) => `event: ${o.type}\ndata: ${JSON.stringify(o)}\n\n`;
+// Gemini chat-completions mock: records each request, answers per scenario.
+const chatReqs = [];
+let geminiSent = "";
+const chatChunk = (delta, finish = null) => `data: ${JSON.stringify({ id: "c1", object: "chat.completion.chunk", model: "google/gemini-3.8-flash", choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
+async function chatUpstream(req, res, raw) {
+  let body = {};
+  try { body = JSON.parse(raw); } catch {}
+  chatReqs.push({ headers: req.headers, body });
+  if (scenario === "gem-stream") {
+    // id arrives in the first delta, the signature only in a later delta (by index).
+    geminiSent = [
+      chatChunk({ role: "assistant", tool_calls: [{ index: 0, id: "call_s1", type: "function", function: { name: "read", arguments: "" } }] }),
+      chatChunk({ tool_calls: [{ index: 0, function: { arguments: "{\"path\":\"a.txt\"}" } }] }),
+      chatChunk({ tool_calls: [{ index: 0, extra_content: { google: { thought_signature: "SIG_STREAM_签名" } } }] }),
+      chatChunk({}, "tool_calls"),
+      "data: [DONE]\n\n",
+    ].join("");
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    const buf = Buffer.from(geminiSent, "utf8");
+    for (let i = 0; i < buf.length; i += 7) res.write(buf.subarray(i, i + 7)); // split frames and multi-byte chars
+    res.end();
+    return;
+  }
+  if (scenario === "gem-json") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ id: "c2", object: "chat.completion", choices: [{ index: 0, finish_reason: "tool_calls", message: { role: "assistant", content: null, tool_calls: [
+      { id: "call_j1", type: "function", function: { name: "ls", arguments: "{}" }, extra_content: { google: { thought_signature: "SIG_JSON" } } },
+    ] } }] }));
+    return;
+  }
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ id: "c3", object: "chat.completion", choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "done" } }] }));
+}
 const upstream = http.createServer(async (req, res) => {
-  for await (const _ of req);
+  const parts = [];
+  for await (const c of req) parts.push(c);
   const key = (req.headers.authorization ?? "").replace("Bearer ", "");
+  if (req.url.includes("/chat/completions")) { await chatUpstream(req, res, Buffer.concat(parts).toString("utf8")); return; }
   if (!req.url.includes("/v1/messages")) { res.writeHead(404).end("{}"); return; }
   hits[key] = (hits[key] ?? 0) + 1;
   const n = hits[key];
@@ -152,6 +187,44 @@ reset("ok");
 {
   const r = await post("/v1/messages", JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 5, messages: [{ role: "user", content: "x" }] }));
   ok("9 normal request 200", r.status === 200 && (await r.text()).includes("message_start"));
+}
+// 11-15. Gemini thought_signature round-trip (DSH drops extra_content)
+const sigOf = (tc) => tc?.extra_content?.google?.thought_signature;
+const lastChat = () => chatReqs[chatReqs.length - 1];
+const toolTurn = (model, calls) => JSON.stringify({ model, stream: false, messages: [
+  { role: "user", content: "list files" },
+  { role: "assistant", content: null, tool_calls: calls },
+  ...calls.map((c) => ({ role: "tool", tool_call_id: c.id, content: "ok" })),
+] });
+const call = (id, extra) => ({ id, type: "function", function: { name: "read", arguments: "{}" }, ...(extra ? { extra_content: extra } : {}) });
+reset("gem-stream");
+{
+  const r = await post("/v1/chat/completions", JSON.stringify({ model: "gemini-3.8-flash", stream: true, messages: [{ role: "user", content: "read a.txt" }] }));
+  const relayed = await r.text();
+  ok("11 gemini stream relayed byte-for-byte", r.status === 200 && relayed === geminiSent, `${relayed.length}/${geminiSent.length} chars`);
+  ok("11 gemini request uses x-api-provider google", lastChat().headers["x-api-provider"] === "google", lastChat().headers["x-api-provider"]);
+  reset("ok");
+  await (await post("/v1/chat/completions", toolTurn("gemini-3.8-flash", [call("call_s1"), call("call_unknown")]))).text();
+  const tcs = lastChat().body.messages.find((m) => m.role === "assistant").tool_calls;
+  ok("12 cached stream signature re-attached by id", sigOf(tcs[0]) === "SIG_STREAM_签名", String(sigOf(tcs[0])));
+  ok("12 unknown id falls back to skip validator", sigOf(tcs[1]) === "skip_thought_signature_validator", String(sigOf(tcs[1])));
+}
+reset("gem-json");
+{
+  await (await post("/v1/chat/completions", JSON.stringify({ model: "gemini-3.1-pro-preview", messages: [{ role: "user", content: "ls" }] }))).text();
+  reset("ok");
+  await (await post("/v1/chat/completions", toolTurn("gemini-3.1-pro-preview", [call("call_j1")]))).text();
+  const tc = lastChat().body.messages.find((m) => m.role === "assistant").tool_calls[0];
+  ok("13 non-stream JSON signature cached and re-attached", sigOf(tc) === "SIG_JSON", String(sigOf(tc)));
+}
+reset("ok");
+{
+  await (await post("/v1/chat/completions", toolTurn("gemini-3.8-flash", [call("call_s1", { google: { thought_signature: "CLIENT_SIG" }, other: 1 })]))).text();
+  const tc = lastChat().body.messages.find((m) => m.role === "assistant").tool_calls[0];
+  ok("14 client-supplied signature kept untouched", sigOf(tc) === "CLIENT_SIG" && tc.extra_content.other === 1, JSON.stringify(tc.extra_content));
+  await (await post("/v1/chat/completions", toolTurn("deepseek-v4-pro", [call("call_s1")]))).text();
+  const tc2 = lastChat().body.messages.find((m) => m.role === "assistant").tool_calls[0];
+  ok("15 non-Gemini models are not modified", tc2.extra_content === undefined && lastChat().headers["x-api-provider"] === "fireworks", JSON.stringify(tc2));
 }
 await proxy.stop();
 upstream.close();
