@@ -166,7 +166,9 @@ $patch = Join-Path $ProfileDir "cordis.patch.yml"
 $original = ""
 if (Test-Path $patch) { $original = [IO.File]::ReadAllText($patch, $utf8) }
 $lines = if ($original) { $original -split "\r?\n" } else { @() }
-$body = (Remove-ManagedBlocks $lines) -join "`n"
+# 新版 DSH 生成的默认文件以 "[]" (空数组) 结尾；与下面追加的 "- ..." 条目混在一起是非法 YAML，
+# DSH 会启动失败。先去掉顶层的 "[]"，最后如果一个条目都没有再补回去。
+$body = ((Remove-ManagedBlocks $lines) | Where-Object { $_ -notmatch '^\[\s*\]\s*(#.*)?$' }) -join "`n"
 $nl = "`n"
 
 if ($body -match "vwFactory/index\.js") {
@@ -204,6 +206,7 @@ if ($body -match "(?m)^- id: llm-pi-ai\s*$") {
 
 $text = ($mount + $nl + $body.Trim()).TrimStart("`n") 
 $text = $text.TrimEnd() + $providers
+if ($text -notmatch "(?m)^- ") { $text = $text.TrimEnd() + $nl + "[]" }
 if (-not $text.EndsWith("`n")) { $text += "`n" }
 if ($text -ne $original) {
   $hadPatch = Test-Path $patch

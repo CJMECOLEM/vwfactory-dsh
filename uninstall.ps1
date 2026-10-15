@@ -32,7 +32,10 @@ if (Test-Path $patch) {
     }
     $out.Add($ln); $i++
   }
-  [IO.File]::WriteAllText($patch, (($out -join "`n").TrimEnd() + "`n"), $utf8)
+  $rest = ($out -join "`n").TrimEnd()
+  # 没有任何条目时补回 DSH 默认的 "[]"，否则文件只剩注释 (YAML 为 null)
+  if ($rest -notmatch "(?m)^- " -and $rest -notmatch "(?m)^\[") { $rest = ($rest + "`n[]").TrimStart("`n") }
+  [IO.File]::WriteAllText($patch, ($rest + "`n"), $utf8)
   Info "已从 cordis.patch.yml 移除 vwFactory 配置"
 }
 
